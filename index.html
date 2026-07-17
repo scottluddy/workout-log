@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Workout Log">
+<meta name="application-name" content="Workout Log">
+<meta name="theme-color" content="#FFFFFF">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png">
+<title>Workout Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #EAE6DF; overscroll-behavior: none; }
+  a { color: #C24020; }
+  a:hover { color: #FF5B35; }
+  .wl-input::placeholder { color: #CFC8BC; font-weight: 500; }
+  .wl-input:focus {
+    outline: none;
+    background: color-mix(in oklab, var(--accent) 8%, #fff);
+    box-shadow: inset 0 0 0 2px var(--accent);
+    border-radius: 7px;
+  }
+  .wl-scroll { scrollbar-width: none; }
+  .wl-scroll::-webkit-scrollbar { display: none; }
+  #root { font-family: Manrope, system-ui, sans-serif; }
+  #__diag_err { position: fixed; bottom: 12px; left: 12px; right: 12px; font: 12px/1.4 ui-monospace,monospace; background: #2a1215; color: #ff8a80; padding: 10px 14px; border-radius: 8px; border: 1px solid #5c2b2e; z-index: 99999; white-space: pre-wrap; max-height: 40vh; overflow: auto; display: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  window.addEventListener('error', function (e) {
+    var d = document.getElementById('__diag_err');
+    if (!d) return;
+    d.style.display = 'block';
+    d.textContent = (d.textContent ? d.textContent + '\n' : '') + '[error] ' + (e.message || e.type) +
+      (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : '');
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var d = document.getElementById('__diag_err');
+    if (!d) return;
+    d.style.display = 'block';
+    d.textContent = (d.textContent ? d.textContent + '\n' : '') + '[promise] ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason));
+  });
+  setTimeout(function () {
+    var root = document.getElementById('root');
+    if (root && !root.firstChild) {
+      var d = document.getElementById('__diag_err');
+      if (d) {
+        d.style.display = 'block';
+        d.textContent = (d.textContent ? d.textContent + '\n' : '') +
+          '[diag] Nothing rendered after 6s. Likely a blocked script (React/Supabase CDN) - check the Network tab for failed requests.';
+      }
+    }
+  }, 6000);
+</script>
+<div id="__diag_err"></div>
+<script>
+"use strict";
+const { useState, useEffect, useRef, useCallback } = React;
+const ACCENT = "#FF5B35";
+// To disable rep color-coding, set this to false — or delete the whole
+// block marked "COLOR CODING MODULE" below, plus its one call site inside
+// the rep-cell renderer further down (search "computeRepColor("). Nothing
+// else in the app depends on it.
+const COLOR_CODE_ENABLED = true;
+const LOCAL_KEY = "wsl_v1";
+// ---- Your Supabase project (from the original app) ----
+const SUPA_URL = "https://wbotaefcsxxlvbytmpxh.supabase.co";
+const SUPA_KEY = "sb_publishable_e1TCH4HPHgxASiYOa6zmyg_X4LmufIJ";
+const SPLITS = [
+    {
+        title: "Workout Split 4.0",
+        short: "4.0",
+        days: [
+            { day: "MONDAY", ex: ["Incline Press - 4 x 6-8", "Pull-ups - 2 x 6-8", "Lat Raise - 3 x 10-15", "Chest Fly - 3 x 10-15"] },
+            { day: "TUESDAY", ex: ["Hack Squat - 3 x 6-8", "Leg Curl - 3 x 10-15", "OH Triceps Ext - 3 x 8-12", "EZ-Bar Curl - 3 x 8-12"] },
+            { day: "WEDNESDAY", ex: ["Pull-ups - 4 x 6-8", "Incline Press - 3 x 6-8", "Lat Raise - 2 x 10-15", "T-Bar Row - 3 x 6-8"] },
+            { day: "THURSDAY", ex: ["RDL - 3 x 7-10", "Leg Extension - 3 x 10-15", "Pushdown - 3 x 10-15", "Bayesian Curl - 3 x 10-15"] },
+            { day: "FRIDAY", ex: ["Lat Raise - 4 x 10-15", "Pulldown - 3 x 7-10", "Incline Press - 2 x 6-8", "Rear Delt Fly - 3 x 12-16"] },
+        ],
+    },
+    {
+        title: "Workout Split 5.0",
+        short: "5.0",
+        days: [
+            { day: "MONDAY", ex: ["Incline Press - 4 x 6-8", "Chest Fly - 3 x 10-15", "Barbell Curl - 2 x 8-12", "Bayesian Curl - 3 x 10-15"] },
+            { day: "TUESDAY", ex: ["Hack Squat - 4 x 6-8", "RDL - 4 x 7-10", "Cable Lateral - 4 x 10-15"] },
+            { day: "WEDNESDAY", ex: ["Pull-ups - 4 x 6-8", "T-Bar Row - 3 x 6-8", "OH Triceps Ext - 3 x 8-12", "Pushdown - 2 x 10-15"] },
+            { day: "THURSDAY", ex: ["Cable Lateral - 5 x 10-15", "Rear Delt Fly - 3 x 12-16", "Incline Press - 4 x 6-8"] },
+            { day: "FRIDAY", ex: ["Pull-ups - 4 x 6-8", "Leg Extension - 4 x 10-15", "Leg Curl - 4 x 10-15"] },
+        ],
+    },
+    {
+        title: "Workout Split 6.0",
+        short: "6.0",
+        days: [
+            { day: "MONDAY", ex: ["Incline Press - 3 x 6-8", "Hack Squat - 4 x 6-8", "Cable Lateral - 2 x 10-15", "Bayesian Curl - 3 x 10-15"] },
+            { day: "TUESDAY", ex: ["Pull-ups - 5 x 6-8", "T-Bar Row - 3 x 6-8", "Leg Curl - 4 x 10-15"] },
+            { day: "WEDNESDAY", ex: ["Cable Lateral - 5 x 10-15", "Rear Delt Fly - 3 x 12-16", "Barbell Curl - 2 x 8-12", "Pushdown - 2 x 10-15"] },
+            { day: "THURSDAY", ex: ["Incline Press - 5 x 6-8", "Chest Fly - 3 x 10-15", "Leg Extension - 4 x 10-15"] },
+            { day: "FRIDAY", ex: ["Pull-ups - 3 x 6-8", "RDL - 4 x 7-10", "Cable Lateral - 2 x 10-15", "OH Triceps Ext - 3 x 8-12"] },
+        ],
+    },
+];
+const HEAD = 42, DAY = 48, EX = 64;
+function colors(accent) {
+    return {
+        a: accent,
+        line: "#ECE7DE",
+        ink: "#26221D",
+        muted: "#A79F93",
+        headBg: "#F3EFE9",
+        dayBg: `color-mix(in oklab, ${accent} 9%, #FDFBF9)`,
+        dayInk: `color-mix(in oklab, ${accent} 74%, #2a1c14)`,
+        disabled: "#F5F2EC",
+    };
+}
+function flatRows(splitIdx) {
+    const rows = [];
+    let rid = 0;
+    SPLITS[splitIdx].days.forEach((d, di) => {
+        rows.push({ t: "day", label: d.day, di });
+        d.ex.forEach((str) => {
+            const idx = str.lastIndexOf(" - ");
+            const base = idx >= 0 ? str.slice(0, idx) : str;
+            const spec = idx >= 0 ? str.slice(idx + 3) : "";
+            const sets = parseInt(spec, 10) || 3;
+            rows.push({ t: "ex", base, spec, sets, rid, di });
+            rid++;
+        });
+        const isMWF = d.day === "MONDAY" || d.day === "WEDNESDAY" || d.day === "FRIDAY";
+        rows.push({ t: "ex", base: isMWF ? "Abs" : "Calves", spec: isMWF ? "3 x 10-15" : "3 x 12-20", sets: 3, rid: "e" + di, di });
+    });
+    return rows;
+}
+// ============================================================
+// COLOR CODING MODULE (start) — safe to delete this entire block
+// ============================================================
+// Rule: comparing a rep cell against the same set, same exercise, on the
+// previous week. Only fires if the weight that week matches this week's
+// weight exactly. If weight differs (or either is missing), no color.
+//   reps went up   -> green
+//   reps unchanged -> yellow
+//   reps went down -> red
+const REP_COLOR_BG = { green: "#E3F5E7", yellow: "#FFF6D8", red: "#FDE7E5" };
+function computeRepColor(entries, split, wi, rid, si) {
+    if (!COLOR_CODE_ENABLED || wi === 0)
+        return null;
+    const wCur = entries[`w|${split}|${wi}|${rid}`];
+    const wPrev = entries[`w|${split}|${wi - 1}|${rid}`];
+    if (!wCur || !wPrev)
+        return null;
+    const wCurNum = parseFloat(wCur), wPrevNum = parseFloat(wPrev);
+    if (isNaN(wCurNum) || isNaN(wPrevNum) || wCurNum !== wPrevNum)
+        return null;
+    const rCur = entries[`r|${split}|${wi}|${rid}|${si}`];
+    const rPrev = entries[`r|${split}|${wi - 1}|${rid}|${si}`];
+    if (!rCur || !rPrev)
+        return null;
+    const rCurNum = parseInt(rCur, 10), rPrevNum = parseInt(rPrev, 10);
+    if (isNaN(rCurNum) || isNaN(rPrevNum))
+        return null;
+    if (rCurNum > rPrevNum)
+        return "green";
+    if (rCurNum === rPrevNum)
+        return "yellow";
+    return "red";
+}
+// ============================================================
+// COLOR CODING MODULE (end)
+// ============================================================
+function dims(availW) {
+    const desktop = availW >= 640;
+    let LEFT = Math.round(availW * (desktop ? 0.15 : 0.255));
+    LEFT = Math.max(desktop ? 150 : 98, Math.min(desktop ? 210 : 142, LEFT));
+    const region = availW - LEFT;
+    const vis = desktop ? Math.max(2, Math.min(4, Math.floor(region / 240))) : 1;
+    const PANEL = Math.floor(region / vis);
+    const R = Math.floor((PANEL * 0.66) / 5);
+    const W = PANEL - 5 * R;
+    return { LEFT, W, R, PANEL, vis, desktop };
+}
+// Same column math as dims(), but always a single full-width panel — used
+// by the focused "This Workout" view, which never needs multiple weeks
+// side by side.
+function dimsFocused(availW) {
+    const desktop = availW >= 640;
+    let LEFT = Math.round(availW * (desktop ? 0.15 : 0.255));
+    LEFT = Math.max(desktop ? 150 : 98, Math.min(desktop ? 210 : 142, LEFT));
+    const PANEL = availW - LEFT;
+    const R = Math.floor((PANEL * 0.66) / 5);
+    const W = PANEL - 5 * R;
+    return { LEFT, W, R, PANEL };
+}
+// MM/DD/YY <-> Date helpers, used by the Monday auto-fill logic.
+function parseMDY(str) {
+    const m = /^(\d{2})\/(\d{2})\/(\d{2})$/.exec(str || "");
+    if (!m)
+        return null;
+    const mm = parseInt(m[1], 10), dd = parseInt(m[2], 10), yy = parseInt(m[3], 10);
+    const d = new Date(2000 + yy, mm - 1, dd);
+    return isNaN(d.getTime()) ? null : d;
+}
+function formatMDY(d) {
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yy = String(d.getFullYear() % 100).padStart(2, "0");
+    return `${mm}/${dd}/${yy}`;
+}
+const BASE_INPUT_STYLE = {
+    width: "100%", height: "100%", border: "none", background: "transparent",
+    textAlign: "center", fontSize: 16, fontWeight: 600, color: "#26221D",
+    fontFamily: "inherit", fontVariantNumeric: "tabular-nums", padding: 0, margin: 0, outline: "none",
+};
+function Input({ value, onChange, kind, ph, fs }) {
+    return (React.createElement("input", { className: "wl-input", type: "text", inputMode: "decimal", placeholder: ph, value: value || "", onChange: onChange, style: fs ? { ...BASE_INPUT_STYLE, fontSize: fs } : BASE_INPUT_STYLE }));
+}
+function App() {
+    const [split, setSplitState] = useState(0);
+    const [curWeek, setCurWeek] = useState(0);
+    const [weekCount, setWeekCount] = useState({ 0: 2, 1: 2, 2: 2 });
+    const [entries, setEntries] = useState({});
+    const [focusedDay, setFocusedDay] = useState(null); // null | { wi, di }
+    const [vw, setVw] = useState(390);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [restoreText, setRestoreText] = useState("");
+    const [status, setStatus] = useState("");
+    const [statusOk, setStatusOk] = useState(true);
+    const [user, setUser] = useState(null);
+    const [authEmail, setAuthEmail] = useState("");
+    const [authPass, setAuthPass] = useState("");
+    const [syncStatus, setSyncStatus] = useState("");
+    const [syncOk, setSyncOk] = useState(true);
+    const wrapRef = useRef(null);
+    const scrollRef = useRef(null);
+    const panelWidthRef = useRef(278);
+    const saveTimer = useRef(null);
+    const pushTimer = useRef(null);
+    const supaRef = useRef(null);
+    const uidRef = useRef(null);
+    const pullingRef = useRef(false);
+    const skipFirstSave = useRef(true);
+    const dirtyRef = useRef(new Set()); // entry keys with local edits not yet confirmed pushed
+    const stateRef = useRef({ weekCount, entries });
+    stateRef.current = { weekCount, entries };
+    // Load local data on mount
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem(LOCAL_KEY);
+            if (raw) {
+                const d = JSON.parse(raw);
+                if (d.weekCount)
+                    setWeekCount((wc) => Object.assign({}, wc, d.weekCount));
+                if (d.entries)
+                    setEntries(d.entries);
+            }
+        }
+        catch (e) { }
+    }, []);
+    // Measure width
+    useEffect(() => {
+        const el = wrapRef.current;
+        if (!el)
+            return;
+        const ro = new ResizeObserver((list) => {
+            const w = list[0].contentRect.width;
+            if (w)
+                setVw(w);
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+    const persistLocal = useCallback(() => {
+        try {
+            localStorage.setItem(LOCAL_KEY, JSON.stringify(stateRef.current));
+        }
+        catch (e) { }
+    }, []);
+    const pushRemote = useCallback(async () => {
+        const supa = supaRef.current, uid = uidRef.current;
+        if (!supa || !uid)
+            return;
+        const pushedKeys = new Set(dirtyRef.current);
+        try {
+            const { error } = await supa.from("workout_logs").upsert({ user_id: uid, data: stateRef.current, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+            if (error) {
+                setSyncStatus(error.message);
+                setSyncOk(false);
+            }
+            else {
+                pushedKeys.forEach((k) => dirtyRef.current.delete(k));
+                setSyncStatus("Synced ✓");
+                setSyncOk(true);
+            }
+        }
+        catch (e) {
+            setSyncStatus("Could not reach the server.");
+            setSyncOk(false);
+        }
+    }, []);
+    const schedulePush = useCallback(() => {
+        if (!uidRef.current || pullingRef.current)
+            return;
+        clearTimeout(pushTimer.current);
+        pushTimer.current = setTimeout(() => pushRemote(), 1200);
+    }, [pushRemote]);
+    const pullMerge = useCallback(async (quiet) => {
+        const supa = supaRef.current, uid = uidRef.current;
+        if (!supa || !uid)
+            return;
+        pullingRef.current = true;
+        if (!quiet) {
+            setSyncStatus("Syncing…");
+            setSyncOk(true);
+        }
+        try {
+            const { data, error } = await supa.from("workout_logs").select("data").eq("user_id", uid).maybeSingle();
+            if (error) {
+                pullingRef.current = false;
+                setSyncStatus(error.message);
+                setSyncOk(false);
+                return;
+            }
+            const remote = data && data.data ? data.data : null;
+            if (remote && remote.entries) {
+                setEntries((cur) => {
+                    const merged = Object.assign({}, remote.entries);
+                    Object.keys(cur).forEach((k) => {
+                        if (dirtyRef.current.has(k))
+                            merged[k] = cur[k];
+                    });
+                    return merged;
+                });
+                setWeekCount((cur) => {
+                    const wc = Object.assign({}, cur);
+                    const rwc = remote.weekCount || {};
+                    [0, 1, 2].forEach((i) => { wc[i] = Math.max(wc[i] || 1, rwc[i] || 1); });
+                    return wc;
+                });
+                setTimeout(() => { persistLocal(); pullingRef.current = false; pushRemote(); }, 0);
+            }
+            else {
+                pullingRef.current = false;
+                pushRemote();
+            }
+        }
+        catch (e) {
+            pullingRef.current = false;
+            setSyncStatus("Could not reach the server.");
+            setSyncOk(false);
+        }
+    }, [persistLocal, pushRemote]);
+    const afterClient = useCallback((supa) => {
+        supa.auth.getSession().then(({ data }) => {
+            const s = data && data.session;
+            if (s) {
+                uidRef.current = s.user.id;
+                setUser({ email: s.user.email });
+                pullMerge();
+            }
+        });
+        supa.auth.onAuthStateChange((_e, session) => {
+            if (session) {
+                uidRef.current = session.user.id;
+                setUser({ email: session.user.email });
+            }
+            else {
+                uidRef.current = null;
+                setUser(null);
+            }
+        });
+    }, [pullMerge]);
+    // Init Supabase + visibility listener
+    useEffect(() => {
+        const tryInit = () => {
+            if (window.supabase && window.supabase.createClient) {
+                try {
+                    const supa = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+                    supaRef.current = supa;
+                    afterClient(supa);
+                }
+                catch (e) {
+                    setSyncStatus("Sync unavailable right now.");
+                    setSyncOk(false);
+                }
+            }
+            else {
+                setTimeout(tryInit, 200);
+            }
+        };
+        tryInit();
+        const onVis = () => { if (document.visibilityState === "visible" && uidRef.current)
+            pullMerge(true); };
+        document.addEventListener("visibilitychange", onVis);
+        const pollId = setInterval(() => {
+            if (uidRef.current && !pullingRef.current)
+                pullMerge(true);
+        }, 15000);
+        return () => {
+            document.removeEventListener("visibilitychange", onVis);
+            clearInterval(pollId);
+        };
+    }, [afterClient, pullMerge]);
+    // Persist locally + schedule remote push whenever data changes
+    useEffect(() => {
+        if (skipFirstSave.current) {
+            skipFirstSave.current = false;
+            return;
+        }
+        persistLocal();
+        schedulePush();
+    }, [weekCount, entries, persistLocal, schedulePush]);
+    const C = colors(ACCENT);
+    const rows = flatRows(split);
+    const weeks = weekCount[split] || 1;
+    const { LEFT, W, R, PANEL, vis } = dims(vw);
+    panelWidthRef.current = PANEL;
+    const maxStart = useCallback(() => {
+        const total = weekCount[split] || 1;
+        return Math.max(0, total - vis);
+    }, [weekCount, split, vis]);
+    const goWeek = useCallback((i) => {
+        const clamped = Math.max(0, Math.min(maxStart(), i));
+        const el = scrollRef.current;
+        if (el)
+            el.scrollTo({ left: clamped * panelWidthRef.current, behavior: "smooth" });
+        setCurWeek(clamped);
+    }, [maxStart]);
+    const onScroll = () => {
+        const el = scrollRef.current;
+        if (!el)
+            return;
+        const w = Math.round(el.scrollLeft / panelWidthRef.current);
+        const cw = Math.max(0, Math.min(maxStart(), w));
+        setCurWeek((prev) => (prev !== cw ? cw : prev));
+    };
+    const setSplit = (i) => {
+        setSplitState(i);
+        setCurWeek(0);
+        setFocusedDay(null);
+        if (scrollRef.current)
+            scrollRef.current.scrollLeft = 0;
+    };
+    const addWeek = () => {
+        setWeekCount((wc) => {
+            const next = Object.assign({}, wc);
+            next[split] = (next[split] || 1) + 1;
+            return next;
+        });
+        requestAnimationFrame(() => requestAnimationFrame(() => goWeek(maxStart() + 1)));
+    };
+    const setEntry = (key, val, kind) => {
+        let v = val;
+        if (kind === "date") {
+            const d = val.replace(/\D/g, "").slice(0, 6);
+            v = d.slice(0, 2);
+            if (d.length > 2)
+                v += "/" + d.slice(2, 4);
+            if (d.length > 4)
+                v += "/" + d.slice(4, 6);
+        }
+        else if (kind === "weight") {
+            v = val.replace(/[^0-9.]/g, "").slice(0, 6);
+        }
+        else {
+            v = val.replace(/[^0-9]/g, "").slice(0, 3);
+        }
+        dirtyRef.current.add(key);
+        setEntries((s) => {
+            const next = Object.assign({}, s, { [key]: v });
+            // Monday date auto-fill: once a complete Monday date is entered,
+            // fill in Tue-Fri for the same week/split with consecutive calendar
+            // days — but only into cells that are still empty.
+            if (kind === "date" && v.length === 8) {
+                const m = /^d\|(\d+)\|(\d+)\|0$/.exec(key);
+                if (m) {
+                    const base = parseMDY(v);
+                    if (base) {
+                        for (let off = 1; off <= 4; off++) {
+                            const targetKey = `d|${m[1]}|${m[2]}|${off}`;
+                            if (!next[targetKey]) {
+                                const nd = new Date(base);
+                                nd.setDate(nd.getDate() + off);
+                                next[targetKey] = formatMDY(nd);
+                                dirtyRef.current.add(targetKey);
+                            }
+                        }
+                    }
+                }
+            }
+            return next;
+        });
+    };
+    // ---- Auth ----
+    const signIn = async () => {
+        const supa = supaRef.current;
+        if (!supa)
+            return;
+        const email = authEmail.trim(), password = authPass;
+        if (!email || !password) {
+            setSyncStatus("Enter your email and password.");
+            setSyncOk(false);
+            return;
+        }
+        setSyncStatus("Signing in…");
+        setSyncOk(true);
+        const { data, error } = await supa.auth.signInWithPassword({ email, password });
+        if (error) {
+            setSyncStatus(error.message);
+            setSyncOk(false);
+            return;
+        }
+        uidRef.current = data.user.id;
+        setUser({ email: data.user.email });
+        setAuthPass("");
+        await pullMerge();
+    };
+    const signUp = async () => {
+        const supa = supaRef.current;
+        if (!supa)
+            return;
+        const email = authEmail.trim(), password = authPass;
+        if (!email || !password) {
+            setSyncStatus("Enter an email and a password (6+ characters).");
+            setSyncOk(false);
+            return;
+        }
+        setSyncStatus("Creating account…");
+        setSyncOk(true);
+        const { data, error } = await supa.auth.signUp({ email, password });
+        if (error) {
+            setSyncStatus(error.message);
+            setSyncOk(false);
+            return;
+        }
+        if (data.session) {
+            uidRef.current = data.user.id;
+            setUser({ email: data.user.email });
+            setAuthPass("");
+            await pullMerge();
+        }
+        else {
+            setSyncStatus("Account created — check your email to confirm, then sign in.");
+            setSyncOk(true);
+        }
+    };
+    const signOut = async () => {
+        const supa = supaRef.current;
+        if (supa)
+            await supa.auth.signOut();
+        uidRef.current = null;
+        setUser(null);
+        setSyncStatus("Signed out.");
+        setSyncOk(true);
+    };
+    // ---- Backup / restore ----
+    const backupString = () => JSON.stringify({ app: "workoutlog", v: 1, savedAt: new Date().toISOString(), weekCount, entries });
+    const doDownload = () => {
+        try {
+            const blob = new Blob([backupString()], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            const d = new Date();
+            const pad = (n) => String(n).padStart(2, "0");
+            a.href = url;
+            a.download = `workout-log-backup-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+            setStatus("Backup file saved. Keep it somewhere safe.");
+            setStatusOk(true);
+        }
+        catch (e) {
+            setStatus('Could not download — try "Copy code" instead.');
+            setStatusOk(false);
+        }
+    };
+    const fallbackCopy = (str, done) => {
+        try {
+            const t = document.createElement("textarea");
+            t.value = str;
+            t.style.position = "fixed";
+            t.style.opacity = "0";
+            document.body.appendChild(t);
+            t.focus();
+            t.select();
+            document.execCommand("copy");
+            t.remove();
+            done();
+        }
+        catch (e) {
+            setRestoreText(str);
+            setStatus("Copy blocked — the code is shown below; copy it manually.");
+            setStatusOk(false);
+        }
+    };
+    const doCopy = () => {
+        const str = backupString();
+        const done = () => { setStatus("Backup code copied. Paste it to restore elsewhere."); setStatusOk(true); };
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(str).then(done, () => fallbackCopy(str, done));
+            }
+            else {
+                fallbackCopy(str, done);
+            }
+        }
+        catch (e) {
+            fallbackCopy(str, done);
+        }
+    };
+    const applyRestore = (text) => {
+        if (!text || !text.trim()) {
+            setStatus("Nothing to restore — choose a file or paste a code.");
+            setStatusOk(false);
+            return;
+        }
+        let d;
+        try {
+            d = JSON.parse(text);
+        }
+        catch (e) {
+            setStatus("That doesn't look like a valid backup.");
+            setStatusOk(false);
+            return;
+        }
+        if (!d || typeof d !== "object" || typeof d.entries !== "object" || d.entries === null) {
+            setStatus("That doesn't look like a valid backup.");
+            setStatusOk(false);
+            return;
+        }
+        const wc = Object.assign({ 0: 2, 1: 2, 2: 2 }, d.weekCount || {});
+        const n = Object.keys(d.entries).length;
+        setWeekCount(wc);
+        setEntries(d.entries);
+        setCurWeek(0);
+        setStatus(`Restored ${n} saved value${n === 1 ? "" : "s"}. ✓`);
+        setStatusOk(true);
+        if (scrollRef.current)
+            scrollRef.current.scrollLeft = 0;
+    };
+    const onRestoreFile = (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file)
+            return;
+        const reader = new FileReader();
+        reader.onload = () => applyRestore(String(reader.result || ""));
+        reader.onerror = () => { setStatus("Could not read that file."); setStatusOk(false); };
+        reader.readAsText(file);
+        e.target.value = "";
+    };
+    // ---- grid rendering ----
+    const cellBorder = `1px solid ${C.line}`;
+    const darkBorder = `2px solid #B7AD9C`;
+    const headCell = (label, w, sub, darkR) => (React.createElement("div", { key: "h" + label, style: { flex: `0 0 ${w}px`, width: w, borderBottom: cellBorder, borderRight: darkR ? darkBorder : cellBorder, borderLeft: darkR ? darkBorder : "none", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 } },
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".04em", color: C.muted } }, label),
+        sub ? React.createElement("div", { style: { fontSize: 10, fontWeight: 600, color: C.muted, opacity: 0.7 } }, sub) : null));
+    const dataCell = (key, w, content, bg, darkR) => (React.createElement("div", { key: key, style: { flex: `0 0 ${w}px`, width: w, borderBottom: cellBorder, borderRight: darkR ? darkBorder : cellBorder, borderLeft: darkR ? darkBorder : "none", background: bg || "transparent", padding: "5px 4px", display: "flex" } }, content));
+    const leftChildren = [
+        React.createElement("div", { key: "corner", style: { position: "sticky", top: 0, zIndex: 6, height: HEAD, background: C.headBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "EXERCISE"),
+    ];
+    rows.forEach((r) => {
+        if (r.t === "day") {
+            leftChildren.push(React.createElement("div", { key: "ld" + r.di, style: { height: DAY, background: C.dayBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 13.5, fontWeight: 800, letterSpacing: ".06em", color: C.dayInk } }, r.label));
+        }
+        else {
+            leftChildren.push(React.createElement("div", { key: "lx" + r.rid, style: { height: EX, background: "#fff", borderBottom: cellBorder, borderRight: darkBorder, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 11px", gap: 2 } },
+                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, color: C.ink, lineHeight: 1.14 } }, r.base),
+                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.a, letterSpacing: ".02em" } }, r.spec)));
+        }
+    });
+    const panels = [];
+    for (let wi = 0; wi < weeks; wi++) {
+        const pc = [
+            React.createElement("div", { key: "ph", style: { position: "sticky", top: 0, zIndex: 2, height: HEAD, display: "flex", background: C.headBg } },
+                headCell("WEIGHT", W, "lb", true),
+                headCell("S1", R),
+                headCell("S2", R),
+                headCell("S3", R),
+                headCell("S4", R),
+                headCell("S5", R)),
+        ];
+        rows.forEach((r) => {
+            if (r.t === "day") {
+                const dateKey = `d|${split}|${wi}|${r.di}`;
+                pc.push(React.createElement("div", { key: "pd" + r.di, style: { height: DAY, display: "flex" } },
+                    dataCell("date" + r.di, W, React.createElement(Input, { value: entries[dateKey], onChange: (e) => setEntry(dateKey, e.target.value, "date"), kind: "date", ph: "MM/DD/YY", fs: 14 }), C.dayBg, true),
+                    React.createElement("div", { onClick: () => setFocusedDay({ wi, di: r.di }), style: { flex: `0 0 ${5 * R}px`, width: 5 * R, borderBottom: cellBorder, borderRight: darkBorder, background: C.dayBg, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" } },
+                        React.createElement("span", { style: { fontSize: 12.5, fontWeight: 800, color: C.a, letterSpacing: ".03em" } }, "This Workout"))));
+            }
+            else {
+                const wKey = `w|${split}|${wi}|${r.rid}`;
+                const reps = [0, 1, 2, 3, 4].map((si) => {
+                    if (si < r.sets) {
+                        const repColor = computeRepColor(entries, split, wi, r.rid, si);
+                        return (React.createElement("div", { key: "r" + si, style: { flex: `0 0 ${R}px`, width: R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
+                            React.createElement(Input, { value: entries[`r|${split}|${wi}|${r.rid}|${si}`], onChange: (e) => setEntry(`r|${split}|${wi}|${r.rid}|${si}`, e.target.value, "rep"), kind: "rep", ph: "" })));
+                    }
+                    return (React.createElement("div", { key: "r" + si, style: { flex: `0 0 ${R}px`, width: R, borderBottom: cellBorder, borderRight: cellBorder, background: C.disabled, backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.028) 5px, rgba(0,0,0,0.028) 6px)" } }));
+                });
+                pc.push(React.createElement("div", { key: "px" + r.rid, style: { height: EX, display: "flex" } },
+                    dataCell("weight" + r.rid, W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight"), kind: "weight", ph: "" }), "#fff", true),
+                    reps));
+            }
+        });
+        panels.push(React.createElement("div", { key: "wk" + wi, style: { flex: `0 0 ${PANEL}px`, width: PANEL, scrollSnapAlign: "start", position: "relative" } }, pc));
+    }
+    // ---- Focused "This Workout" single-day view ----
+    let focusedContent = null;
+    if (focusedDay) {
+        const fDims = dimsFocused(vw);
+        const fRows = rows.filter((r) => r.t === "ex" && r.di === focusedDay.di);
+        const fDateKey = `d|${split}|${focusedDay.wi}|${focusedDay.di}`;
+        const fLeft = [
+            React.createElement("div", { key: "fcorner", style: { position: "sticky", top: 0, zIndex: 6, height: HEAD, background: C.headBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "EXERCISE"),
+            React.createElement("div", { key: "fdayname", style: { height: DAY, background: C.dayBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 13.5, fontWeight: 800, letterSpacing: ".06em", color: C.dayInk } }, SPLITS[split].days[focusedDay.di].day),
+        ];
+        fRows.forEach((r) => {
+            fLeft.push(React.createElement("div", { key: "flx" + r.rid, style: { height: EX, background: "#fff", borderBottom: cellBorder, borderRight: darkBorder, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 11px", gap: 2 } },
+                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, color: C.ink, lineHeight: 1.14 } }, r.base),
+                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.a, letterSpacing: ".02em" } }, r.spec)));
+        });
+        const fPanelRows = [
+            React.createElement("div", { key: "fph", style: { position: "sticky", top: 0, zIndex: 2, height: HEAD, display: "flex", background: C.headBg } },
+                headCell("WEIGHT", fDims.W, "lb", true),
+                headCell("S1", fDims.R),
+                headCell("S2", fDims.R),
+                headCell("S3", fDims.R),
+                headCell("S4", fDims.R),
+                headCell("S5", fDims.R)),
+            React.createElement("div", { key: "fbackrow", style: { height: DAY, display: "flex" } },
+                dataCell("fdate", fDims.W, (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", fontSize: 14, fontWeight: 600, color: C.ink } }, entries[fDateKey] || "—")), C.dayBg, true),
+                React.createElement("div", { onClick: () => setFocusedDay(null), style: { flex: `0 0 ${5 * fDims.R}px`, width: 5 * fDims.R, borderBottom: cellBorder, borderRight: darkBorder, background: C.dayBg, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" } },
+                    React.createElement("span", { style: { fontSize: 12.5, fontWeight: 800, color: C.a, letterSpacing: ".03em" } }, "\u2039 Back"))),
+        ];
+        fRows.forEach((r) => {
+            const wKey = `w|${split}|${focusedDay.wi}|${r.rid}`;
+            const reps = [0, 1, 2, 3, 4].map((si) => {
+                if (si < r.sets) {
+                    const repColor = computeRepColor(entries, split, focusedDay.wi, r.rid, si);
+                    return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
+                        React.createElement(Input, { value: entries[`r|${split}|${focusedDay.wi}|${r.rid}|${si}`], onChange: (e) => setEntry(`r|${split}|${focusedDay.wi}|${r.rid}|${si}`, e.target.value, "rep"), kind: "rep", ph: "" })));
+                }
+                return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: C.disabled, backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.028) 5px, rgba(0,0,0,0.028) 6px)" } }));
+            });
+            fPanelRows.push(React.createElement("div", { key: "fpx" + r.rid, style: { height: EX, display: "flex" } },
+                dataCell("fweight" + r.rid, fDims.W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight"), kind: "weight", ph: "" }), "#fff", true),
+                reps));
+        });
+        focusedContent = (React.createElement("div", { style: { display: "flex", width: fDims.LEFT + fDims.PANEL, minWidth: "100%" } },
+            React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${fDims.LEFT}px`, width: fDims.LEFT, background: "#fff" } }, fLeft),
+            React.createElement("div", { style: { flex: `0 0 ${fDims.PANEL}px`, width: fDims.PANEL } }, fPanelRows)));
+    }
+    const weekWord = vis > 1 ? "Weeks" : "Week";
+    const weekLabel = (() => {
+        const total = weekCount[split] || 1;
+        const start = Math.min(curWeek, Math.max(0, total - vis));
+        const first = start + 1;
+        const last = Math.min(start + vis, total);
+        return vis > 1 && last > first ? `${first}–${last}` : String(first);
+    })();
+    const optBase = { border: "none", cursor: "pointer", borderRadius: 9, padding: "6px 11px", fontFamily: "inherit", fontSize: 12.5, lineHeight: 1 };
+    return (React.createElement("div", { style: { minHeight: "100dvh", display: "flex", justifyContent: "center", background: "#EAE6DF", fontFamily: "Manrope, system-ui, sans-serif" } },
+        React.createElement("style", null, `
+        .wl-input::placeholder { color: #CFC8BC; font-weight: 500; }
+        .wl-input:focus { outline: none; background: color-mix(in oklab, ${C.a} 8%, #fff); box-shadow: inset 0 0 0 2px ${C.a}; border-radius: 7px; }
+      `),
+        React.createElement("div", { ref: wrapRef, style: { position: "relative", width: "100%", maxWidth: 1200, height: "100dvh", background: "#FFFFFF", overflow: "hidden", margin: "0 auto" } },
+            React.createElement("div", { style: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 5, background: "#FFFFFF", borderBottom: "1px solid #ECE7DE", boxShadow: "0 6px 18px -12px rgba(0,0,0,0.18)", height: "calc(env(safe-area-inset-top, 0px) + 118px)", padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 0", boxSizing: "border-box" } },
+                React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 } },
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".14em", color: "#A79F93", marginBottom: 3 } }, "WORKOUT LOG"),
+                        React.createElement("div", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "-.01em", color: "#26221D", lineHeight: 1 } }, SPLITS[split].title)),
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexShrink: 0 } },
+                        React.createElement("div", { style: { display: "flex", gap: 2, background: "#F1EDE6", border: "1px solid #E7E1D7", borderRadius: 12, padding: 3 } }, [0, 1, 2].map((i) => (React.createElement("button", { key: i, onClick: () => setSplit(i), style: i === split ? { ...optBase, background: "#fff", color: C.a, fontWeight: 800, boxShadow: "0 1px 3px rgba(0,0,0,0.12)" } : { ...optBase, background: "transparent", color: "#A79F93", fontWeight: 700 } }, SPLITS[i].short)))),
+                        React.createElement("button", { onClick: () => { setMenuOpen(true); setStatus(""); setRestoreText(""); }, title: "Backup & Restore", style: { width: 34, height: 34, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, color: "#5E574C", fontSize: 19, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u22EF"))),
+                !focusedDay && (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                        React.createElement("button", { onClick: () => goWeek(curWeek - 1), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u2039"),
+                        React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#26221D", minWidth: 96, textAlign: "center" } },
+                            weekWord,
+                            " ",
+                            weekLabel,
+                            " ",
+                            React.createElement("span", { style: { color: "#A79F93", fontWeight: 600 } },
+                                "of ",
+                                weekCount[split] || 1)),
+                        React.createElement("button", { onClick: () => goWeek(curWeek + 1), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u203A")),
+                    React.createElement("button", { onClick: addWeek, style: { border: "none", cursor: "pointer", background: C.a, color: "#fff", borderRadius: 10, padding: "9px 15px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1 } }, "+ Week")))),
+            focusedDay ? (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 118px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)" } }, focusedContent)) : (React.createElement("div", { ref: scrollRef, className: "wl-scroll", onScroll: onScroll, style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 118px)", left: 0, right: 0, bottom: 0, overflow: "auto", scrollSnapType: "x proximity", scrollPaddingLeft: LEFT, WebkitOverflowScrolling: "touch", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)", "--accent": C.a } },
+                React.createElement("div", { style: { display: "flex", width: LEFT + weeks * PANEL, minWidth: "100%" } },
+                    React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${LEFT}px`, width: LEFT, background: "#fff" } }, leftChildren),
+                    panels))),
+            menuOpen && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
+                React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
+                        React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#26221D" } }, "Backup & Restore"),
+                        React.createElement("button", { onClick: () => setMenuOpen(false), style: { width: 30, height: 30, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+                    React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.45, color: "#8C857B", margin: "0 0 16px" } }, "Sign in to sync your log across devices automatically. Backups below work offline too."),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "ACCOUNT & SYNC"),
+                    user ? (React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: "12px 14px", marginBottom: 18 } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 } },
+                            React.createElement("div", { style: { minWidth: 0 } },
+                                React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".05em", color: "#A79F93" } }, "SIGNED IN"),
+                                React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#26221D", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, user.email)),
+                            React.createElement("div", { style: { display: "flex", gap: 7, flexShrink: 0 } },
+                                React.createElement("button", { onClick: () => pullMerge(), style: { padding: "8px 12px", border: "1px solid #E7E1D7", borderRadius: 9, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sync now"),
+                                React.createElement("button", { onClick: signOut, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: "#F1EDE6", color: "#5E574C", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sign out"))))) : (React.createElement("div", { style: { marginBottom: 18 } },
+                        React.createElement("input", { type: "email", autoComplete: "email", value: authEmail, onChange: (e) => setAuthEmail(e.target.value), placeholder: "Email", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 8 } }),
+                        React.createElement("input", { type: "password", autoComplete: "current-password", value: authPass, onChange: (e) => setAuthPass(e.target.value), placeholder: "Password", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 10 } }),
+                        React.createElement("div", { style: { display: "flex", gap: 8 } },
+                            React.createElement("button", { onClick: signIn, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Sign in"),
+                            React.createElement("button", { onClick: signUp, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Create account")))),
+                    React.createElement("div", { style: { minHeight: syncStatus ? 18 : 0, marginBottom: syncStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: syncOk ? "#1F8A5B" : "#C0392B" } }, syncStatus),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "BACK UP"),
+                    React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 18 } },
+                        React.createElement("button", { onClick: doDownload, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Download file"),
+                        React.createElement("button", { onClick: doCopy, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Copy code")),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "RESTORE"),
+                    React.createElement("label", { style: { display: "block", padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 13, fontWeight: 600, color: "#5E574C", cursor: "pointer", marginBottom: 10 } },
+                        "Choose backup file",
+                        React.createElement("input", { type: "file", accept: ".json,application/json", onChange: onRestoreFile, style: { display: "none" } })),
+                    React.createElement("textarea", { value: restoreText, onChange: (e) => setRestoreText(e.target.value), placeholder: "\u2026or paste a backup code here", style: { width: "100%", boxSizing: "border-box", height: 70, border: "1px solid #E7E1D7", borderRadius: 11, padding: 10, fontFamily: "inherit", fontSize: 12, color: "#26221D", resize: "none" } }),
+                    React.createElement("button", { onClick: () => applyRestore(restoreText), style: { width: "100%", marginTop: 8, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Restore from code"),
+                    React.createElement("div", { style: { marginTop: 12, minHeight: 16, fontSize: 12.5, fontWeight: 700, textAlign: "center", color: status ? (statusOk ? "#1F8A5B" : "#C0392B") : "transparent" } }, status || "placeholder")))))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
+
+</script>
+</body>
+</html>
