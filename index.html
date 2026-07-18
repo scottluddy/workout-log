@@ -190,14 +190,43 @@ function exercisesForDate(program, entries, d) {
     const dt = (program.dayTypes || []).find((x) => x.id === dtId);
     return dt ? dt.exercises : [];
 }
+// ============================================================
+// FINISHER EXERCISES (start) — ad hoc extras added to one specific date,
+// entirely separate from the program template. Safe to delete along with
+// its state/handlers in App() and the "Finishers" UI block in the focused
+// view — has no effect on Previous/Next Workout, which only ever looks at
+// day-type/weekday matching, never at what finishers exist on a given day.
+function getFinishers(entries, programId, dk) {
+    const raw = entries[`fin|${programId}|${dk}`];
+    if (!raw)
+        return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    }
+    catch (e) {
+        return [];
+    }
+}
+// ============================================================
+// FINISHER EXERCISES (end)
+// ============================================================
 function dayHasReps(entries, program, d) {
     const exs = exercisesForDate(program, entries, d);
-    if (!exs || !exs.length)
-        return false;
     const dk = dateKey(d);
-    return exs.some((ex) => {
+    const templateHit = !!(exs && exs.length && exs.some((ex) => {
         for (let si = 0; si < ex.sets; si++) {
             if (entries[`rd|${program.id}|${dk}|${ex.rid}|${si}`])
+                return true;
+        }
+        return false;
+    }));
+    if (templateHit)
+        return true;
+    const finishers = getFinishers(entries, program.id, dk);
+    return finishers.some((f) => {
+        for (let si = 0; si < 5; si++) {
+            if (entries[`rd|${program.id}|${dk}|${f.id}|${si}`])
                 return true;
         }
         return false;
@@ -683,6 +712,32 @@ function App() {
         dirtyRef.current.add(key);
         setEntries((s) => { const n = Object.assign({}, s); delete n[key]; return n; });
     };
+    // ---- FINISHER EXERCISES (start) ----
+    const addFinisher = (name) => {
+        if (!focusedDate || !name || !name.trim())
+            return;
+        const key = `fin|${activeProgram.id}|${focusedDate}`;
+        const cur = getFinishers(entries, activeProgram.id, focusedDate);
+        const id = "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        const next = [...cur, { id, name: name.trim() }];
+        dirtyRef.current.add(key);
+        setEntries((s) => Object.assign({}, s, { [key]: JSON.stringify(next) }));
+    };
+    const removeFinisher = (finisherId) => {
+        if (!focusedDate)
+            return;
+        const key = `fin|${activeProgram.id}|${focusedDate}`;
+        const cur = getFinishers(entries, activeProgram.id, focusedDate);
+        const next = cur.filter((f) => f.id !== finisherId);
+        dirtyRef.current.add(key);
+        setEntries((s) => Object.assign({}, s, { [key]: JSON.stringify(next) }));
+    };
+    const addCustomFinisher = () => {
+        const name = window.prompt("Finisher name (e.g. Forearms)");
+        if (name && name.trim())
+            addFinisher(name.trim());
+    };
+    // ---- FINISHER EXERCISES (end) ----
     // ---- My Programs ----
     const selectProgram = (id) => {
         currentProgramId !== id && (programsDirtyRef.current = true);
@@ -1112,13 +1167,37 @@ function App() {
                     dataCell("fweight" + r.rid, fDims.W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight") }), "#fff", true),
                     reps));
             });
+            // ---- FINISHER EXERCISES rows (start) ----
+            const finishers = getFinishers(entries, activeProgram.id, focusedDate);
+            const FIN_BG = "#FBF8F3", FIN_BORDER = "#E0C9A6", FIN_ROW_H = 56;
+            if (finishers.length > 0) {
+                fLeft.push(React.createElement("div", { key: "findivider", style: { height: 28, background: FIN_BG, borderBottom: `1.5px dashed ${FIN_BORDER}`, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px" } },
+                    React.createElement("span", { style: { fontSize: 9.5, fontWeight: 700, letterSpacing: ".05em", color: "#B08A4E" } }, "FINISHERS")));
+                fPanelRows.push(React.createElement("div", { key: "findividerp", style: { height: 28, background: FIN_BG, borderBottom: `1.5px dashed ${FIN_BORDER}` } }));
+                finishers.forEach((f) => {
+                    const wKey = `wd|${activeProgram.id}|${focusedDate}|${f.id}`;
+                    fLeft.push(React.createElement("div", { key: "flf" + f.id, style: { height: FIN_ROW_H, background: FIN_BG, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 6px 0 11px" } },
+                        React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.name),
+                        React.createElement("button", { onClick: () => removeFinisher(f.id), title: "Remove finisher", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: 5, lineHeight: 1, flexShrink: 0 } }, "\u2715")));
+                    const reps = [0, 1, 2, 3, 4].map((si) => (React.createElement("div", { key: "ffr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: "#fff", padding: "5px 3px", display: "flex" } },
+                        React.createElement(Input, { value: entries[`rd|${activeProgram.id}|${focusedDate}|${f.id}|${si}`], onChange: (e) => setEntry(`rd|${activeProgram.id}|${focusedDate}|${f.id}|${si}`, e.target.value, "rep") }))));
+                    fPanelRows.push(React.createElement("div", { key: "ffx" + f.id, style: { height: FIN_ROW_H, display: "flex" } },
+                        dataCell("ffweight" + f.id, fDims.W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight") }), FIN_BG, true),
+                        reps));
+                });
+            }
+            // ---- FINISHER EXERCISES rows (end) ----
             focusedContent = (React.createElement("div", null,
                 activeProgram.kind === "custom" && (React.createElement("div", { style: { padding: "12px 16px 4px", display: "flex", alignItems: "center", justifyContent: "space-between" } },
                     React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.a } }, (activeProgram.dayTypes.find((dt) => dt.id === entries[`dt|${activeProgram.id}|${focusedDate}`]) || {}).label),
                     React.createElement("button", { onClick: changeDayType, style: { border: "none", background: "transparent", color: "#8C857B", fontFamily: "inherit", fontSize: 12, fontWeight: 600, cursor: "pointer", textDecoration: "underline" } }, "Change day type"))),
-                rowsToShow.length === 0 ? (React.createElement("div", { style: { padding: "40px 20px", textAlign: "center", color: C.muted, fontSize: 14, fontWeight: 600 } }, "Rest day \u2014 no exercises scheduled.")) : (React.createElement("div", { style: { display: "flex", width: fDims.LEFT + fDims.PANEL, minWidth: "100%" } },
+                rowsToShow.length === 0 && finishers.length === 0 ? (React.createElement("div", { style: { padding: "40px 20px 20px", textAlign: "center", color: C.muted, fontSize: 14, fontWeight: 600 } }, "Rest day \u2014 no exercises scheduled.")) : (React.createElement("div", { style: { display: "flex", width: fDims.LEFT + fDims.PANEL, minWidth: "100%" } },
                     React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${fDims.LEFT}px`, width: fDims.LEFT, background: "#fff" } }, fLeft),
-                    React.createElement("div", { style: { flex: `0 0 ${fDims.PANEL}px`, width: fDims.PANEL } }, fPanelRows)))));
+                    React.createElement("div", { style: { flex: `0 0 ${fDims.PANEL}px`, width: fDims.PANEL } }, fPanelRows))),
+                React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, padding: "14px 16px 24px" } },
+                    React.createElement("button", { onClick: () => addFinisher("Abs"), style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Abs"),
+                    React.createElement("button", { onClick: () => addFinisher("Calves"), style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Calves"),
+                    React.createElement("button", { onClick: addCustomFinisher, style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Custom\u2026"))));
         }
     }
     // ---- Calendar view content ----
@@ -1297,7 +1376,7 @@ function App() {
                         React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "DAY TYPES"),
                         builderDayTypes.map((dt, dtIdx) => (React.createElement("div", { key: dtIdx, style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: 12, marginBottom: 12 } },
                             React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8, alignItems: "center" } },
-                                React.createElement("input", { value: dt.label, onChange: (e) => updateBuilderDayTypeLabel(dtIdx, e.target.value), placeholder: "Day type name (e.g. Push Day)", style: { flex: 1, padding: "8px 9px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 13, fontWeight: 700 } }),
+                                React.createElement("input", { value: dt.label, onChange: (e) => updateBuilderDayTypeLabel(dtIdx, e.target.value), placeholder: "ex Push Day", style: { flex: 1, padding: "8px 9px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 13, fontWeight: 700 } }),
                                 React.createElement("button", { onClick: () => removeBuilderDayType(dtIdx), style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 16, cursor: "pointer", padding: "0 2px" } }, "\u2715")),
                             dt.exercises.length > 0 && (React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 5, padding: "0 1px" } },
                                 React.createElement("div", { style: { flex: 2.6, minWidth: 0, fontSize: 10, fontWeight: 700, letterSpacing: ".04em", color: C.muted } }, "EXERCISE"),
