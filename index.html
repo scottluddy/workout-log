@@ -16,6 +16,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <style>
@@ -53,7 +54,7 @@
       if (d) {
         d.style.display = 'block';
         d.textContent = (d.textContent ? d.textContent + '\n' : '') +
-          '[diag] Nothing rendered after 6s. Likely a blocked script (React/Supabase CDN) - check the Network tab for failed requests.';
+          '[diag] Nothing rendered after 6s. Likely a blocked script (React/Supabase/XLSX CDN) - check the Network tab for failed requests.';
       }
     }
   }, 6000);
@@ -69,7 +70,8 @@ const TODAY_BLUE = "#3E7BFA";
 // the rep-cell renderer further down (search "computeRepColor("). Nothing
 // else in the app depends on it.
 const COLOR_CODE_ENABLED = true;
-const LOCAL_KEY = "wsl_v2";
+const LOCAL_KEY = "wsl_v3";
+const BUILTIN_ID = 0; // Split 4.0's program id — matches the historical `0` already baked into existing entry keys. Never change this.
 // ---- Your Supabase project (from the original app) ----
 const SUPA_URL = "https://wbotaefcsxxlvbytmpxh.supabase.co";
 const SUPA_KEY = "sb_publishable_e1TCH4HPHgxASiYOa6zmyg_X4LmufIJ";
@@ -77,11 +79,6 @@ const SPLITS = [
     {
         title: "Workout Split 4.0",
         short: "4.0",
-        // Calendar days between repeats of the identical workout. The program
-        // is fixed to Mon-Fri, so "the same workout" always recurs 7 calendar
-        // days later (next week, same weekday) — not 5, since weekends aren't
-        // workout days. When custom/variable programs are added later, this
-        // can become per-program again.
         repeatFrequency: 7,
         days: [
             { day: "MONDAY", ex: ["Incline Press - 4 x 6-8", "Pull-ups - 2 x 6-8", "Lat Raise - 3 x 10-15", "Chest Fly - 3 x 10-15"] },
@@ -93,6 +90,7 @@ const SPLITS = [
     },
 ];
 const HEAD = 42, EX = 64;
+const DOW_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 function colors(accent) {
     return {
         a: accent,
@@ -105,6 +103,8 @@ function colors(accent) {
         disabled: "#F5F2EC",
     };
 }
+// Split 4.0's original row builder — kept exactly as-is so existing entry
+// keys (rid values) never change.
 function flatRows(splitIdx) {
     const rows = [];
     let rid = 0;
@@ -122,10 +122,6 @@ function flatRows(splitIdx) {
     });
     return rows;
 }
-// exercise rows only, grouped by day-of-week index (0=Mon .. 4=Fri)
-function rowsForDay(splitIdx, di) {
-    return flatRows(splitIdx).filter((r) => r.di === di);
-}
 // ============================================================
 // DATE HELPERS
 // ============================================================
@@ -137,8 +133,6 @@ function addDays(d, n) { const nd = new Date(d); nd.setDate(nd.getDate() + n); r
 function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function sameMonth(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth(); }
 function sameDate(a, b) { return dateKey(a) === dateKey(b); }
-// program day-of-week index for a real date: 0=Mon..4=Fri, null if weekend
-function diForDate(d) { const dow = d.getDay(); return dow >= 1 && dow <= 5 ? dow - 1 : null; }
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 function formatLongDate(d) {
@@ -155,6 +149,108 @@ function parseMDY(str) {
     return isNaN(d.getTime()) ? null : d;
 }
 // ============================================================
+// PROGRAM MODEL
+// ============================================================
+// Every program (built-in or uploaded) is normalized to:
+//   weekly:  { id, name, kind: "weekly", days: [{dow0-6, exercises:[{rid,name,sets,repRange}]}] }
+//   custom:  { id, name, kind: "custom", dayTypes: [{id,label,exercises:[{rid,name,sets,repRange}]}] }
+function builtinProgram() {
+    const flat = flatRows(0);
+    const diToDow = [1, 2, 3, 4, 5]; // Split 4.0's di 0-4 (Mon-Fri) -> real weekday 1-5
+    const days = DOW_NAMES.map((_, dow) => ({ dow, exercises: [] }));
+    flat.forEach((r) => {
+        const dow = diToDow[r.di];
+        const repRange = r.spec.includes(" x ") ? r.spec.split(" x ")[1] : r.spec;
+        days[dow].exercises.push({ rid: r.rid, name: r.base, sets: r.sets, repRange });
+    });
+    return { id: BUILTIN_ID, name: SPLITS[0].title, kind: "weekly", days };
+}
+function getActiveProgram(currentProgramId, programs) {
+    if (currentProgramId === BUILTIN_ID)
+        return builtinProgram();
+    const p = (programs || []).find((pp) => pp.id === currentProgramId);
+    return p || builtinProgram();
+}
+function exercisesForDate(program, entries, d) {
+    if (program.kind === "weekly") {
+        const day = program.days.find((x) => x.dow === d.getDay());
+        return day ? day.exercises : [];
+    }
+    const dk = dateKey(d);
+    const dtId = entries[`dt|${program.id}|${dk}`];
+    if (!dtId)
+        return null; // not yet assigned
+    const dt = (program.dayTypes || []).find((x) => x.id === dtId);
+    return dt ? dt.exercises : [];
+}
+function dayHasReps(entries, program, d) {
+    const exs = exercisesForDate(program, entries, d);
+    if (!exs || !exs.length)
+        return false;
+    const dk = dateKey(d);
+    return exs.some((ex) => {
+        for (let si = 0; si < ex.sets; si++) {
+            if (entries[`rd|${program.id}|${dk}|${ex.rid}|${si}`])
+                return true;
+        }
+        return false;
+    });
+}
+// ============================================================
+// XLSX PROGRAM PARSING (start) — safe to delete along with the "Add
+// Program" button and its file input if this feature is ever removed.
+// ============================================================
+function parseProgramWorkbook(workbook, programName) {
+    const XLSXlib = window.XLSX;
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSXlib.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    if (!rows.length)
+        throw new Error("That file looks empty.");
+    const col0 = String(rows[0][0] || "").trim().toLowerCase();
+    let kind;
+    if (col0.indexOf("day of week") === 0)
+        kind = "weekly";
+    else if (col0.indexOf("day type") === 0)
+        kind = "custom";
+    else
+        throw new Error('The first column header must be "Day of Week" or "Day Type".');
+    const groups = [];
+    let current = null;
+    let rid = 0;
+    for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        const label = String(row[0] || "").trim();
+        const exName = String(row[1] || "").trim();
+        const sets = parseInt(row[2], 10);
+        const reps = String(row[3] || "").trim();
+        if (label) {
+            current = { label, exercises: [] };
+            groups.push(current);
+        }
+        if (!exName || !current)
+            continue;
+        current.exercises.push({ rid: rid++, name: exName, sets: isNaN(sets) ? 3 : sets, repRange: reps || "-" });
+    }
+    if (!groups.length)
+        throw new Error("No rows found under any day label.");
+    if (kind === "weekly") {
+        const days = DOW_NAMES.map((name, dow) => {
+            const g = groups.find((g) => g.label.toLowerCase() === name.toLowerCase());
+            return { dow, exercises: g ? g.exercises : [] };
+        });
+        if (!days.some((d) => d.exercises.length))
+            throw new Error("No exercises found for any day of the week.");
+        return { id: "prog_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8), name: programName, kind: "weekly", days, createdAt: new Date().toISOString() };
+    }
+    const dayTypes = groups.filter((g) => g.exercises.length).map((g, i) => ({ id: "dt" + i, label: g.label, exercises: g.exercises }));
+    if (!dayTypes.length)
+        throw new Error("No exercises found for any day type.");
+    return { id: "prog_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8), name: programName, kind: "custom", dayTypes, createdAt: new Date().toISOString() };
+}
+// ============================================================
+// XLSX PROGRAM PARSING (end)
+// ============================================================
+// ============================================================
 // LEGACY DATA MIGRATION (start) — safe to delete once you're confident
 // everyone's data has migrated. Purely additive: it only ever adds new
 // "wd|"/"rd|" (date-keyed) entries, never touches or removes the old
@@ -170,12 +266,12 @@ function migrateLegacyEntries(entries) {
             return;
         const spIdx = parseInt(m[1], 10), wi = m[2], di = parseInt(m[3], 10);
         if (!SPLITS[spIdx])
-            return; // program no longer exists (e.g. old 5.0/6.0)
+            return;
         const parsed = parseMDY(entries[k]);
         if (!parsed)
             return;
         const dk = dateKey(parsed);
-        rowsForDay(spIdx, di).forEach((r) => {
+        flatRows(spIdx).filter((r) => r.di === di).forEach((r) => {
             const wOld = `w|${spIdx}|${wi}|${r.rid}`;
             const wNew = `wd|${spIdx}|${dk}|${r.rid}`;
             if (entries[wOld] !== undefined && next[wNew] === undefined) {
@@ -207,19 +303,19 @@ function migrateLegacyEntries(entries) {
 //   reps unchanged -> yellow
 //   reps went down -> red
 const REP_COLOR_BG = { green: "#E3F5E7", yellow: "#FFF6D8", red: "#FDE7E5" };
-function computeRepColor(entries, split, dk, rid, si) {
+function computeRepColor(entries, programId, dk, rid, si) {
     if (!COLOR_CODE_ENABLED)
         return null;
     const prevKey = dateKey(addDays(keyToDate(dk), -7));
-    const wCur = entries[`wd|${split}|${dk}|${rid}`];
-    const wPrev = entries[`wd|${split}|${prevKey}|${rid}`];
+    const wCur = entries[`wd|${programId}|${dk}|${rid}`];
+    const wPrev = entries[`wd|${programId}|${prevKey}|${rid}`];
     if (!wCur || !wPrev)
         return null;
     const wCurNum = parseFloat(wCur), wPrevNum = parseFloat(wPrev);
     if (isNaN(wCurNum) || isNaN(wPrevNum) || wCurNum !== wPrevNum)
         return null;
-    const rCur = entries[`rd|${split}|${dk}|${rid}|${si}`];
-    const rPrev = entries[`rd|${split}|${prevKey}|${rid}|${si}`];
+    const rCur = entries[`rd|${programId}|${dk}|${rid}|${si}`];
+    const rPrev = entries[`rd|${programId}|${prevKey}|${rid}|${si}`];
     if (!rCur || !rPrev)
         return null;
     const rCurNum = parseInt(rCur, 10), rPrevNum = parseInt(rPrev, 10);
@@ -234,8 +330,6 @@ function computeRepColor(entries, split, dk, rid, si) {
 // ============================================================
 // COLOR CODING MODULE (end)
 // ============================================================
-// Column math for the focused "This Workout" table (exercise name column +
-// WEIGHT + 5 set columns).
 function dimsFocused(availW) {
     const desktop = availW >= 640;
     let LEFT = Math.round(availW * (desktop ? 0.15 : 0.255));
@@ -245,23 +339,6 @@ function dimsFocused(availW) {
     const W = PANEL - 5 * R;
     return { LEFT, W, R, PANEL };
 }
-// Whether a given real date has any reps logged (drives the calendar's
-// green highlight).
-function dayHasReps(entries, split, d) {
-    const di = diForDate(d);
-    if (di === null)
-        return false;
-    const dk = dateKey(d);
-    return rowsForDay(split, di).some((r) => {
-        for (let si = 0; si < r.sets; si++) {
-            if (entries[`rd|${split}|${dk}|${r.rid}|${si}`])
-                return true;
-        }
-        return false;
-    });
-}
-// Builds the grid of calendar cells for a given displayed month (Sun-start
-// weeks, only as many rows as the month actually needs).
 function buildMonthGrid(viewMonth) {
     const first = startOfMonth(viewMonth);
     const startDow = first.getDay();
@@ -275,6 +352,18 @@ function buildMonthGrid(viewMonth) {
     }
     return cells;
 }
+// Nearest earlier/later date (bounded search) with the same custom day-type
+// assigned — used by Previous/Next Workout for custom-kind programs.
+function findAdjacentSameDayType(entries, programId, fromKey, dtId, dir, maxDays) {
+    let d = keyToDate(fromKey);
+    for (let i = 0; i < (maxDays || 730); i++) {
+        d = addDays(d, dir);
+        const dk = dateKey(d);
+        if (entries[`dt|${programId}|${dk}`] === dtId)
+            return dk;
+    }
+    return null;
+}
 const BASE_INPUT_STYLE = {
     width: "100%", height: "100%", border: "none", background: "transparent",
     textAlign: "center", fontSize: 16, fontWeight: 600, color: "#26221D",
@@ -284,8 +373,9 @@ function Input({ value, onChange, fs }) {
     return (React.createElement("input", { className: "wl-input", type: "text", inputMode: "decimal", placeholder: "", value: value || "", onChange: onChange, style: fs ? { ...BASE_INPUT_STYLE, fontSize: fs } : BASE_INPUT_STYLE }));
 }
 function App() {
-    const [split] = useState(0); // only one program for now; kept as state for when custom programs return
     const [entries, setEntries] = useState({});
+    const [programs, setPrograms] = useState([]); // uploaded programs only; Split 4.0 is not in this list
+    const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
     const [vw, setVw] = useState(390);
@@ -293,6 +383,8 @@ function App() {
     const [restoreText, setRestoreText] = useState("");
     const [status, setStatus] = useState("");
     const [statusOk, setStatusOk] = useState(true);
+    const [programStatus, setProgramStatus] = useState("");
+    const [programStatusOk, setProgramStatusOk] = useState(true);
     const [user, setUser] = useState(null);
     const [authEmail, setAuthEmail] = useState("");
     const [authPass, setAuthPass] = useState("");
@@ -306,8 +398,9 @@ function App() {
     const pullingRef = useRef(false);
     const skipFirstSave = useRef(true);
     const dirtyRef = useRef(new Set());
-    const stateRef = useRef({ entries });
-    stateRef.current = { entries };
+    const programsDirtyRef = useRef(false);
+    const stateRef = useRef({ entries, programs, currentProgramId });
+    stateRef.current = { entries, programs, currentProgramId };
     const migratedRef = useRef(false);
     // Load local data, then run the one-time (additive, idempotent) migration
     useEffect(() => {
@@ -317,6 +410,10 @@ function App() {
                 const d = JSON.parse(raw);
                 if (d.entries)
                     setEntries(d.entries);
+                if (Array.isArray(d.programs))
+                    setPrograms(d.programs);
+                if (d.currentProgramId !== undefined)
+                    setCurrentProgramId(d.currentProgramId);
             }
         }
         catch (e) { }
@@ -334,7 +431,7 @@ function App() {
                 }
                 return cur;
             });
-        }, 1200); // after local load + a chance for sync to land, so we migrate the fullest picture
+        }, 1200);
         return () => clearTimeout(t);
     }, []);
     // Measure width
@@ -361,6 +458,7 @@ function App() {
         if (!supa || !uid)
             return;
         const pushedKeys = new Set(dirtyRef.current);
+        const wasProgramsDirty = programsDirtyRef.current;
         try {
             const { error } = await supa.from("workout_logs").upsert({ user_id: uid, data: stateRef.current, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
             if (error) {
@@ -369,6 +467,8 @@ function App() {
             }
             else {
                 pushedKeys.forEach((k) => dirtyRef.current.delete(k));
+                if (wasProgramsDirty)
+                    programsDirtyRef.current = false;
                 setSyncStatus("Synced ✓");
                 setSyncOk(true);
             }
@@ -411,6 +511,18 @@ function App() {
                     });
                     return merged;
                 });
+                // Programs: union by id, so a program added on any device eventually
+                // shows up everywhere and is never dropped. currentProgramId is
+                // intentionally left as whatever this device last had — a background
+                // sync shouldn't yank you to a different program mid-use.
+                if (!programsDirtyRef.current && Array.isArray(remote.programs)) {
+                    setPrograms((cur) => {
+                        const merged = Array.isArray(remote.programs) ? remote.programs.slice() : [];
+                        (cur || []).forEach((lp) => { if (!merged.find((rp) => rp.id === lp.id))
+                            merged.push(lp); });
+                        return merged;
+                    });
+                }
                 setTimeout(() => { persistLocal(); pullingRef.current = false; pushRemote(); }, 0);
             }
             else {
@@ -483,21 +595,51 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, persistLocal, schedulePush]);
     const C = colors(ACCENT);
+    const activeProgram = getActiveProgram(currentProgramId, programs);
     // ---- Previous/Next Workout (focused view navigation) ----
-    const repeatFrequency = SPLITS[split].repeatFrequency || 7;
-    const goPrevWorkout = () => { if (focusedDate)
-        setFocusedDate(dateKey(addDays(keyToDate(focusedDate), -repeatFrequency))); };
-    const goNextWorkout = () => { if (focusedDate)
-        setFocusedDate(dateKey(addDays(keyToDate(focusedDate), repeatFrequency))); };
+    const goPrevWorkout = () => {
+        if (!focusedDate)
+            return;
+        if (activeProgram.kind === "weekly") {
+            setFocusedDate(dateKey(addDays(keyToDate(focusedDate), -7)));
+        }
+        else {
+            const dtId = entries[`dt|${activeProgram.id}|${focusedDate}`];
+            if (!dtId)
+                return;
+            const found = findAdjacentSameDayType(entries, activeProgram.id, focusedDate, dtId, -1);
+            if (found)
+                setFocusedDate(found);
+        }
+    };
+    const goNextWorkout = () => {
+        if (!focusedDate)
+            return;
+        if (activeProgram.kind === "weekly") {
+            setFocusedDate(dateKey(addDays(keyToDate(focusedDate), 7)));
+        }
+        else {
+            const dtId = entries[`dt|${activeProgram.id}|${focusedDate}`];
+            if (!dtId)
+                return;
+            const found = findAdjacentSameDayType(entries, activeProgram.id, focusedDate, dtId, 1);
+            if (found)
+                setFocusedDate(found);
+        }
+    };
+    const hasNextWorkoutBtn = activeProgram.kind === "weekly" || !!(focusedDate && entries[`dt|${activeProgram.id}|${focusedDate}`]);
     const goHome = () => {
         setFocusedDate(null);
         setViewMonth(startOfMonth(new Date()));
     };
     const openWorkout = (d) => {
-        if (diForDate(d) === null)
-            return; // weekend, no program day
+        if (activeProgram.kind === "weekly") {
+            const exs = exercisesForDate(activeProgram, entries, d);
+            if (!exs || !exs.length)
+                return; // rest day
+        }
         setFocusedDate(dateKey(d));
     };
     const setEntry = (key, val, kind) => {
@@ -508,6 +650,60 @@ function App() {
             v = val.replace(/[^0-9]/g, "").slice(0, 3);
         dirtyRef.current.add(key);
         setEntries((s) => Object.assign({}, s, { [key]: v }));
+    };
+    const chooseDayType = (dtId) => {
+        if (!focusedDate)
+            return;
+        const key = `dt|${activeProgram.id}|${focusedDate}`;
+        dirtyRef.current.add(key);
+        setEntries((s) => Object.assign({}, s, { [key]: dtId }));
+    };
+    const changeDayType = () => {
+        if (!focusedDate)
+            return;
+        const key = `dt|${activeProgram.id}|${focusedDate}`;
+        dirtyRef.current.add(key);
+        setEntries((s) => { const n = Object.assign({}, s); delete n[key]; return n; });
+    };
+    // ---- My Programs ----
+    const selectProgram = (id) => {
+        currentProgramId !== id && (programsDirtyRef.current = true);
+        setCurrentProgramId(id);
+        setFocusedDate(null);
+        setViewMonth(startOfMonth(new Date()));
+    };
+    const onAddProgramFile = (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = "";
+        if (!file)
+            return;
+        if (!window.XLSX) {
+            setProgramStatus("Still loading the file reader — try again in a moment.");
+            setProgramStatusOk(false);
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const data = new Uint8Array(reader.result);
+                const wb = window.XLSX.read(data, { type: "array" });
+                const name = file.name.replace(/\.xlsx$/i, "");
+                const program = parseProgramWorkbook(wb, name);
+                setPrograms((cur) => [...cur, program]);
+                programsDirtyRef.current = true;
+                setCurrentProgramId(program.id);
+                setFocusedDate(null);
+                setViewMonth(startOfMonth(new Date()));
+                setProgramStatus(`Added "${program.name}" (${program.kind === "weekly" ? "Weekly" : "Custom"}) and made it current. ✓`);
+                setProgramStatusOk(true);
+            }
+            catch (err) {
+                setProgramStatus(err.message || "Could not read that file.");
+                setProgramStatusOk(false);
+            }
+        };
+        reader.onerror = () => { setProgramStatus("Could not read that file."); setProgramStatusOk(false); };
+        reader.readAsArrayBuffer(file);
     };
     // ---- Auth ----
     const signIn = async () => {
@@ -572,7 +768,7 @@ function App() {
         setSyncOk(true);
     };
     // ---- Backup / restore ----
-    const backupString = () => JSON.stringify({ app: "workoutlog", v: 2, savedAt: new Date().toISOString(), entries });
+    const backupString = () => JSON.stringify({ app: "workoutlog", v: 3, savedAt: new Date().toISOString(), entries, programs, currentProgramId });
     const doDownload = () => {
         try {
             const blob = new Blob([backupString()], { type: "application/json" });
@@ -650,7 +846,11 @@ function App() {
         }
         const n = Object.keys(d.entries).length;
         setEntries(d.entries);
-        migratedRef.current = false; // let migration re-scan the restored data
+        if (Array.isArray(d.programs))
+            setPrograms(d.programs);
+        if (d.currentProgramId !== undefined)
+            setCurrentProgramId(d.currentProgramId);
+        migratedRef.current = false;
         setFocusedDate(null);
         setStatus(`Restored ${n} saved value${n === 1 ? "" : "s"}. ✓`);
         setStatusOk(true);
@@ -675,46 +875,57 @@ function App() {
     // ---- Focused "This Workout" view content ----
     let focusedContent = null;
     let focusedTitle = "";
+    let needsDayTypePick = false;
     if (focusedDate) {
         const fDims = dimsFocused(vw);
         const fDateObj = keyToDate(focusedDate);
-        const di = diForDate(fDateObj);
-        const fRows = di === null ? [] : rowsForDay(split, di);
         focusedTitle = formatLongDate(fDateObj);
-        const fLeft = [
-            React.createElement("div", { key: "fcorner", style: { position: "sticky", top: 0, zIndex: 6, height: HEAD, background: C.headBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "EXERCISE"),
-        ];
-        fRows.forEach((r) => {
-            fLeft.push(React.createElement("div", { key: "flx" + r.rid, style: { height: EX, background: "#fff", borderBottom: cellBorder, borderRight: darkBorder, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 11px", gap: 2 } },
-                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, color: C.ink, lineHeight: 1.14 } }, r.base),
-                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.a, letterSpacing: ".02em" } }, r.spec)));
-        });
-        const fPanelRows = [
-            React.createElement("div", { key: "fph", style: { position: "sticky", top: 0, zIndex: 2, height: HEAD, display: "flex", background: C.headBg } },
-                headCell("WEIGHT", fDims.W, "lb", true),
-                headCell("S1", fDims.R),
-                headCell("S2", fDims.R),
-                headCell("S3", fDims.R),
-                headCell("S4", fDims.R),
-                headCell("S5", fDims.R)),
-        ];
-        fRows.forEach((r) => {
-            const wKey = `wd|${split}|${focusedDate}|${r.rid}`;
-            const reps = [0, 1, 2, 3, 4].map((si) => {
-                if (si < r.sets) {
-                    const repColor = computeRepColor(entries, split, focusedDate, r.rid, si);
-                    return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
-                        React.createElement(Input, { value: entries[`rd|${split}|${focusedDate}|${r.rid}|${si}`], onChange: (e) => setEntry(`rd|${split}|${focusedDate}|${r.rid}|${si}`, e.target.value, "rep") })));
-                }
-                return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: C.disabled, backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.028) 5px, rgba(0,0,0,0.028) 6px)" } }));
+        const fRows = exercisesForDate(activeProgram, entries, fDateObj);
+        needsDayTypePick = activeProgram.kind === "custom" && fRows === null;
+        if (!needsDayTypePick) {
+            const rowsToShow = fRows || [];
+            const fLeft = [
+                React.createElement("div", { key: "fcorner", style: { position: "sticky", top: 0, zIndex: 6, height: HEAD, background: C.headBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "EXERCISE"),
+            ];
+            rowsToShow.forEach((r) => {
+                fLeft.push(React.createElement("div", { key: "flx" + r.rid, style: { height: EX, background: "#fff", borderBottom: cellBorder, borderRight: darkBorder, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 11px", gap: 2 } },
+                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, color: C.ink, lineHeight: 1.14 } }, r.name),
+                    React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.a, letterSpacing: ".02em" } },
+                        r.sets,
+                        " x ",
+                        r.repRange)));
             });
-            fPanelRows.push(React.createElement("div", { key: "fpx" + r.rid, style: { height: EX, display: "flex" } },
-                dataCell("fweight" + r.rid, fDims.W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight") }), "#fff", true),
-                reps));
-        });
-        focusedContent = (React.createElement("div", { style: { display: "flex", width: fDims.LEFT + fDims.PANEL, minWidth: "100%" } },
-            React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${fDims.LEFT}px`, width: fDims.LEFT, background: "#fff" } }, fLeft),
-            React.createElement("div", { style: { flex: `0 0 ${fDims.PANEL}px`, width: fDims.PANEL } }, fPanelRows)));
+            const fPanelRows = [
+                React.createElement("div", { key: "fph", style: { position: "sticky", top: 0, zIndex: 2, height: HEAD, display: "flex", background: C.headBg } },
+                    headCell("WEIGHT", fDims.W, "lb", true),
+                    headCell("S1", fDims.R),
+                    headCell("S2", fDims.R),
+                    headCell("S3", fDims.R),
+                    headCell("S4", fDims.R),
+                    headCell("S5", fDims.R)),
+            ];
+            rowsToShow.forEach((r) => {
+                const wKey = `wd|${activeProgram.id}|${focusedDate}|${r.rid}`;
+                const reps = [0, 1, 2, 3, 4].map((si) => {
+                    if (si < r.sets) {
+                        const repColor = computeRepColor(entries, activeProgram.id, focusedDate, r.rid, si);
+                        return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
+                            React.createElement(Input, { value: entries[`rd|${activeProgram.id}|${focusedDate}|${r.rid}|${si}`], onChange: (e) => setEntry(`rd|${activeProgram.id}|${focusedDate}|${r.rid}|${si}`, e.target.value, "rep") })));
+                    }
+                    return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: C.disabled, backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.028) 5px, rgba(0,0,0,0.028) 6px)" } }));
+                });
+                fPanelRows.push(React.createElement("div", { key: "fpx" + r.rid, style: { height: EX, display: "flex" } },
+                    dataCell("fweight" + r.rid, fDims.W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight") }), "#fff", true),
+                    reps));
+            });
+            focusedContent = (React.createElement("div", null,
+                activeProgram.kind === "custom" && (React.createElement("div", { style: { padding: "12px 16px 4px", display: "flex", alignItems: "center", justifyContent: "space-between" } },
+                    React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.a } }, (activeProgram.dayTypes.find((dt) => dt.id === entries[`dt|${activeProgram.id}|${focusedDate}`]) || {}).label),
+                    React.createElement("button", { onClick: changeDayType, style: { border: "none", background: "transparent", color: "#8C857B", fontFamily: "inherit", fontSize: 12, fontWeight: 600, cursor: "pointer", textDecoration: "underline" } }, "Change day type"))),
+                rowsToShow.length === 0 ? (React.createElement("div", { style: { padding: "40px 20px", textAlign: "center", color: C.muted, fontSize: 14, fontWeight: 600 } }, "Rest day \u2014 no exercises scheduled.")) : (React.createElement("div", { style: { display: "flex", width: fDims.LEFT + fDims.PANEL, minWidth: "100%" } },
+                    React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${fDims.LEFT}px`, width: fDims.LEFT, background: "#fff" } }, fLeft),
+                    React.createElement("div", { style: { flex: `0 0 ${fDims.PANEL}px`, width: fDims.PANEL } }, fPanelRows)))));
+        }
     }
     // ---- Calendar view content ----
     const today = new Date();
@@ -734,36 +945,47 @@ function App() {
                 React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 } },
                     React.createElement("div", null,
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".14em", color: "#A79F93", marginBottom: 3 } }, "WORKOUT LOG"),
-                        React.createElement("div", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "-.01em", color: "#26221D", lineHeight: 1 } }, SPLITS[split].title)),
+                        React.createElement("div", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "-.01em", color: "#26221D", lineHeight: 1 } }, activeProgram.name)),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexShrink: 0 } },
-                        React.createElement("button", { onClick: () => { setMenuOpen(true); setStatus(""); setRestoreText(""); }, title: "Backup & Restore", style: { width: 34, height: 34, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, color: "#5E574C", fontSize: 19, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u22EF"))),
+                        React.createElement("button", { onClick: () => { setMenuOpen(true); setStatus(""); setRestoreText(""); setProgramStatus(""); }, title: "Account", style: { width: 34, height: 34, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, color: "#5E574C", fontSize: 19, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u22EF"))),
                 focusedDate ? (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 14 } },
                     React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: "#26221D", textAlign: "center" } }, focusedTitle),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8 } },
-                        React.createElement("button", { onClick: goPrevWorkout, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "\u2039 Previous Workout"),
+                        React.createElement("button", { onClick: goPrevWorkout, disabled: activeProgram.kind === "custom" && !entries[`dt|${activeProgram.id}|${focusedDate}`], style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "\u2039 Previous Workout"),
                         React.createElement("button", { onClick: goHome, style: { border: "none", cursor: "pointer", background: C.a, color: "#fff", borderRadius: 10, padding: "9px 18px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1 } }, "Home"),
-                        React.createElement("button", { onClick: goNextWorkout, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "Next Workout \u203A")))) : (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 } },
+                        React.createElement("button", { onClick: goNextWorkout, disabled: !hasNextWorkoutBtn, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "Next Workout \u203A")))) : (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 } },
                     React.createElement("button", { onClick: () => setViewMonth((m) => addDays(startOfMonth(m), -1)), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u2039"),
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: "#26221D" } },
                         MONTH_NAMES[viewMonth.getMonth()],
                         " ",
                         viewMonth.getFullYear()),
-                    React.createElement("button", { onClick: () => setViewMonth((m) => addDays(new Date(m.getFullYear(), m.getMonth() + 1, 1), 0)), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u203A"))),
+                    React.createElement("button", { onClick: () => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1)), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u203A"))),
                 !focusedDate && !sameMonth(viewMonth, today) && (React.createElement("button", { onClick: () => setViewMonth(startOfMonth(today)), style: { marginTop: 10, width: "100%", padding: "8px 0", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } }, "Today"))),
-            focusedDate ? (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 166px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)" } }, focusedContent)) : (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 118px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", padding: "18px 16px calc(env(safe-area-inset-bottom, 0px) + 28px)" } },
+            focusedDate ? (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 166px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)" } }, needsDayTypePick ? (React.createElement("div", { style: { padding: 20 } },
+                React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.muted, marginBottom: 12, textAlign: "center" } }, "Select a day type for this date"),
+                activeProgram.dayTypes.map((dt) => (React.createElement("button", { key: dt.id, onClick: () => chooseDayType(dt.id), style: { display: "block", width: "100%", textAlign: "left", padding: "14px 16px", marginBottom: 10, border: "1px solid #E7E1D7", borderRadius: 12, background: "#fff", fontFamily: "inherit", cursor: "pointer" } },
+                    React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, color: C.ink } }, dt.label),
+                    React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 2 } },
+                        dt.exercises.length,
+                        " exercise",
+                        dt.exercises.length === 1 ? "" : "s")))))) : focusedContent)) : (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 118px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", padding: "18px 16px calc(env(safe-area-inset-bottom, 0px) + 28px)" } },
                 React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 8 } }, WEEKDAY_LETTERS.map((d, i) => (React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, d)))),
                 calRows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 } }, row.map((cell, ci) => {
-                    const isWeekend = ci === 0 || ci === 6;
                     const isToday = sameDate(cell.date, today);
-                    const logged = cell.inMonth && !isWeekend && dayHasReps(entries, split, cell.date);
-                    const disabled = !cell.inMonth || isWeekend;
+                    let restDay = false;
+                    if (cell.inMonth && activeProgram.kind === "weekly") {
+                        const exs = exercisesForDate(activeProgram, entries, cell.date);
+                        restDay = !exs || !exs.length;
+                    }
+                    const logged = cell.inMonth && dayHasReps(entries, activeProgram, cell.date);
+                    const disabled = !cell.inMonth || restDay;
                     let bg = "transparent", fg = cell.inMonth ? C.ink : "#D8D2C6", ring = null;
                     if (logged) {
                         bg = REP_COLOR_BG.green;
                         ring = "#2FAE66";
                         fg = cell.inMonth ? "#1B7A46" : fg;
                     }
-                    else if (isWeekend) {
+                    else if (restDay) {
                         fg = "#D8D2C6";
                     }
                     return (React.createElement("div", { key: ci, style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 0" } },
@@ -789,10 +1011,28 @@ function App() {
             menuOpen && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
-                        React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#26221D" } }, "Backup & Restore"),
+                        React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#26221D" } }, "Account"),
                         React.createElement("button", { onClick: () => setMenuOpen(false), style: { width: 30, height: 30, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
-                    React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.45, color: "#8C857B", margin: "0 0 16px" } }, "Sign in to sync your log across devices automatically. Backups below work offline too."),
-                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "ACCOUNT & SYNC"),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", margin: "18px 0 8px" } }, "MY PROGRAMS"),
+                    React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, overflow: "hidden", marginBottom: 10 } },
+                        React.createElement("button", { onClick: () => selectProgram(BUILTIN_ID), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "none", borderBottom: "1px solid #ECE7DE", background: currentProgramId === BUILTIN_ID ? "#FFF3EE" : "#fff", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
+                            React.createElement("div", null,
+                                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, SPLITS[0].title),
+                                React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, "Built-in")),
+                            currentProgramId === BUILTIN_ID && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16 } }, "\u2713")),
+                        programs.map((p, i) => (React.createElement("button", { key: p.id, onClick: () => selectProgram(p.id), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "none", borderBottom: i === programs.length - 1 ? "none" : "1px solid #ECE7DE", background: currentProgramId === p.id ? "#FFF3EE" : "#fff", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
+                            React.createElement("div", null,
+                                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, p.name),
+                                React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, p.kind === "weekly" ? "Weekly" : "Custom")),
+                            currentProgramId === p.id && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16 } }, "\u2713"))))),
+                    React.createElement("label", { style: { display: "block", padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 13, fontWeight: 700, color: C.a, cursor: "pointer", marginBottom: 10 } },
+                        "+ Add Program (upload .xlsx)",
+                        React.createElement("input", { type: "file", accept: ".xlsx", onChange: onAddProgramFile, style: { display: "none" } })),
+                    React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
+                        React.createElement("a", { href: "Weekly_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Weekly template"),
+                        React.createElement("a", { href: "Custom_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Custom template")),
+                    React.createElement("div", { style: { minHeight: programStatus ? 18 : 0, marginBottom: programStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: programStatusOk ? "#1F8A5B" : "#C0392B" } }, programStatus),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", margin: "8px 0 8px" } }, "ACCOUNT & SYNC"),
                     user ? (React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: "12px 14px", marginBottom: 18 } },
                         React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 } },
                             React.createElement("div", { style: { minWidth: 0 } },
