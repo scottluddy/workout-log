@@ -23,13 +23,6 @@
   html, body { margin: 0; height: 100%; background: #EAE6DF; overscroll-behavior: none; }
   a { color: #C24020; }
   a:hover { color: #FF5B35; }
-  .wl-input::placeholder { color: #CFC8BC; font-weight: 500; }
-  .wl-input:focus {
-    outline: none;
-    background: color-mix(in oklab, var(--accent) 8%, #fff);
-    box-shadow: inset 0 0 0 2px var(--accent);
-    border-radius: 7px;
-  }
   .wl-scroll { scrollbar-width: none; }
   .wl-scroll::-webkit-scrollbar { display: none; }
   #root { font-family: Manrope, system-ui, sans-serif; }
@@ -70,12 +63,13 @@
 "use strict";
 const { useState, useEffect, useRef, useCallback } = React;
 const ACCENT = "#FF5B35";
+const TODAY_BLUE = "#3E7BFA";
 // To disable rep color-coding, set this to false — or delete the whole
 // block marked "COLOR CODING MODULE" below, plus its one call site inside
 // the rep-cell renderer further down (search "computeRepColor("). Nothing
 // else in the app depends on it.
 const COLOR_CODE_ENABLED = true;
-const LOCAL_KEY = "wsl_v1";
+const LOCAL_KEY = "wsl_v2";
 // ---- Your Supabase project (from the original app) ----
 const SUPA_URL = "https://wbotaefcsxxlvbytmpxh.supabase.co";
 const SUPA_KEY = "sb_publishable_e1TCH4HPHgxASiYOa6zmyg_X4LmufIJ";
@@ -83,7 +77,12 @@ const SPLITS = [
     {
         title: "Workout Split 4.0",
         short: "4.0",
-        repeatFrequency: 5,
+        // Calendar days between repeats of the identical workout. The program
+        // is fixed to Mon-Fri, so "the same workout" always recurs 7 calendar
+        // days later (next week, same weekday) — not 5, since weekends aren't
+        // workout days. When custom/variable programs are added later, this
+        // can become per-program again.
+        repeatFrequency: 7,
         days: [
             { day: "MONDAY", ex: ["Incline Press - 4 x 6-8", "Pull-ups - 2 x 6-8", "Lat Raise - 3 x 10-15", "Chest Fly - 3 x 10-15"] },
             { day: "TUESDAY", ex: ["Hack Squat - 3 x 6-8", "Leg Curl - 3 x 10-15", "OH Triceps Ext - 3 x 8-12", "EZ-Bar Curl - 3 x 8-12"] },
@@ -92,32 +91,8 @@ const SPLITS = [
             { day: "FRIDAY", ex: ["Lat Raise - 4 x 10-15", "Pulldown - 3 x 7-10", "Incline Press - 2 x 6-8", "Rear Delt Fly - 3 x 12-16"] },
         ],
     },
-    {
-        title: "Workout Split 5.0",
-        short: "5.0",
-        repeatFrequency: 5,
-        days: [
-            { day: "MONDAY", ex: ["Incline Press - 4 x 6-8", "Chest Fly - 3 x 10-15", "Barbell Curl - 2 x 8-12", "Bayesian Curl - 3 x 10-15"] },
-            { day: "TUESDAY", ex: ["Hack Squat - 4 x 6-8", "RDL - 4 x 7-10", "Cable Lateral - 4 x 10-15"] },
-            { day: "WEDNESDAY", ex: ["Pull-ups - 4 x 6-8", "T-Bar Row - 3 x 6-8", "OH Triceps Ext - 3 x 8-12", "Pushdown - 2 x 10-15"] },
-            { day: "THURSDAY", ex: ["Cable Lateral - 5 x 10-15", "Rear Delt Fly - 3 x 12-16", "Incline Press - 4 x 6-8"] },
-            { day: "FRIDAY", ex: ["Pull-ups - 4 x 6-8", "Leg Extension - 4 x 10-15", "Leg Curl - 4 x 10-15"] },
-        ],
-    },
-    {
-        title: "Workout Split 6.0",
-        short: "6.0",
-        repeatFrequency: 5,
-        days: [
-            { day: "MONDAY", ex: ["Incline Press - 3 x 6-8", "Hack Squat - 4 x 6-8", "Cable Lateral - 2 x 10-15", "Bayesian Curl - 3 x 10-15"] },
-            { day: "TUESDAY", ex: ["Pull-ups - 5 x 6-8", "T-Bar Row - 3 x 6-8", "Leg Curl - 4 x 10-15"] },
-            { day: "WEDNESDAY", ex: ["Cable Lateral - 5 x 10-15", "Rear Delt Fly - 3 x 12-16", "Barbell Curl - 2 x 8-12", "Pushdown - 2 x 10-15"] },
-            { day: "THURSDAY", ex: ["Incline Press - 5 x 6-8", "Chest Fly - 3 x 10-15", "Leg Extension - 4 x 10-15"] },
-            { day: "FRIDAY", ex: ["Pull-ups - 3 x 6-8", "RDL - 4 x 7-10", "Cable Lateral - 2 x 10-15", "OH Triceps Ext - 3 x 8-12"] },
-        ],
-    },
 ];
-const HEAD = 42, DAY = 48, EX = 64;
+const HEAD = 42, EX = 64;
 function colors(accent) {
     return {
         a: accent,
@@ -134,7 +109,6 @@ function flatRows(splitIdx) {
     const rows = [];
     let rid = 0;
     SPLITS[splitIdx].days.forEach((d, di) => {
-        rows.push({ t: "day", label: d.day, di });
         d.ex.forEach((str) => {
             const idx = str.lastIndexOf(" - ");
             const base = idx >= 0 ? str.slice(0, idx) : str;
@@ -148,80 +122,104 @@ function flatRows(splitIdx) {
     });
     return rows;
 }
+// exercise rows only, grouped by day-of-week index (0=Mon .. 4=Fri)
+function rowsForDay(splitIdx, di) {
+    return flatRows(splitIdx).filter((r) => r.di === di);
+}
 // ============================================================
-// AUTO-SCROLL-TO-LATEST MODULE (start)
+// DATE HELPERS
 // ============================================================
-// Scans backward from the most recent week/day for the first day that has
-// any rep logged, so the app opens already scrolled to where you left off.
-function findLatestDayWithReps(entries, split, weekCount, rows) {
-    const totalWeeks = weekCount[split] || 1;
-    for (let wi = totalWeeks - 1; wi >= 0; wi--) {
-        for (let di = 4; di >= 0; di--) {
-            const dayRows = rows.filter((r) => r.t === "ex" && r.di === di);
-            for (const r of dayRows) {
-                for (let si = 0; si < r.sets; si++) {
-                    if (entries[`r|${split}|${wi}|${r.rid}|${si}`])
-                        return { wi, di };
+function pad2(n) { return String(n).padStart(2, "0"); }
+function dateKey(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function keyToDate(k) { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); }
+function todayKey() { return dateKey(new Date()); }
+function addDays(d, n) { const nd = new Date(d); nd.setDate(nd.getDate() + n); return nd; }
+function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+function sameMonth(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth(); }
+function sameDate(a, b) { return dateKey(a) === dateKey(b); }
+// program day-of-week index for a real date: 0=Mon..4=Fri, null if weekend
+function diForDate(d) { const dow = d.getDay(); return dow >= 1 && dow <= 5 ? dow - 1 : null; }
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
+function formatLongDate(d) {
+    const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    return `${dayNames[d.getDay()]} \u00b7 ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+// legacy MM/DD/YY parser, kept only for migrating old date-cell values
+function parseMDY(str) {
+    const m = /^(\d{2})\/(\d{2})\/(\d{2})$/.exec(str || "");
+    if (!m)
+        return null;
+    const mm = parseInt(m[1], 10), dd = parseInt(m[2], 10), yy = parseInt(m[3], 10);
+    const d = new Date(2000 + yy, mm - 1, dd);
+    return isNaN(d.getTime()) ? null : d;
+}
+// ============================================================
+// LEGACY DATA MIGRATION (start) — safe to delete once you're confident
+// everyone's data has migrated. Purely additive: it only ever adds new
+// "wd|"/"rd|" (date-keyed) entries, never touches or removes the old
+// "w|"/"r|"/"d|" (week-indexed) entries, so nothing can be lost by
+// running this repeatedly.
+// ============================================================
+function migrateLegacyEntries(entries) {
+    const next = Object.assign({}, entries);
+    let migrated = 0;
+    Object.keys(entries).forEach((k) => {
+        const m = /^d\|(\d+)\|(\d+)\|(\d+)$/.exec(k);
+        if (!m)
+            return;
+        const spIdx = parseInt(m[1], 10), wi = m[2], di = parseInt(m[3], 10);
+        if (!SPLITS[spIdx])
+            return; // program no longer exists (e.g. old 5.0/6.0)
+        const parsed = parseMDY(entries[k]);
+        if (!parsed)
+            return;
+        const dk = dateKey(parsed);
+        rowsForDay(spIdx, di).forEach((r) => {
+            const wOld = `w|${spIdx}|${wi}|${r.rid}`;
+            const wNew = `wd|${spIdx}|${dk}|${r.rid}`;
+            if (entries[wOld] !== undefined && next[wNew] === undefined) {
+                next[wNew] = entries[wOld];
+                migrated++;
+            }
+            for (let si = 0; si < r.sets; si++) {
+                const rOld = `r|${spIdx}|${wi}|${r.rid}|${si}`;
+                const rNew = `rd|${spIdx}|${dk}|${r.rid}|${si}`;
+                if (entries[rOld] !== undefined && next[rNew] === undefined) {
+                    next[rNew] = entries[rOld];
+                    migrated++;
                 }
             }
-        }
-    }
-    return null;
-}
-// Vertical pixel offset (scrollTop) that brings a given day's row to the
-// top of the grid, just under the sticky header.
-function computeDayScrollTop(rows, targetDi) {
-    let acc = 0;
-    for (const r of rows) {
-        if (r.t === "day") {
-            if (r.di === targetDi)
-                return acc;
-            acc += DAY;
-        }
-        else {
-            acc += EX;
-        }
-    }
-    return acc;
+        });
+    });
+    return { next, migrated };
 }
 // ============================================================
-// AUTO-SCROLL-TO-LATEST MODULE (end)
+// LEGACY DATA MIGRATION (end)
 // ============================================================
-// ============================================================
-// WORKOUT NAVIGATION helpers (used by the focused "This Workout" view's
-// Previous/Next Workout buttons)
-// ============================================================
-function workoutIndex(wi, di) {
-    return wi * 5 + di;
-}
-function workoutFromIndex(idx, totalWeeks) {
-    const wi = Math.floor(idx / 5), di = idx % 5;
-    if (wi < 0 || wi >= totalWeeks || di < 0 || di > 4)
-        return null;
-    return { wi, di };
-}
 // ============================================================
 // COLOR CODING MODULE (start) — safe to delete this entire block
 // ============================================================
-// Rule: comparing a rep cell against the same set, same exercise, on the
-// previous week. Only fires if the weight that week matches this week's
-// weight exactly. If weight differs (or either is missing), no color.
+// Rule: comparing a rep cell against the same set, same exercise, 7
+// calendar days earlier (the previous occurrence of this workout). Only
+// fires if the weight that day matches this day's weight exactly.
 //   reps went up   -> green
 //   reps unchanged -> yellow
 //   reps went down -> red
 const REP_COLOR_BG = { green: "#E3F5E7", yellow: "#FFF6D8", red: "#FDE7E5" };
-function computeRepColor(entries, split, wi, rid, si) {
-    if (!COLOR_CODE_ENABLED || wi === 0)
+function computeRepColor(entries, split, dk, rid, si) {
+    if (!COLOR_CODE_ENABLED)
         return null;
-    const wCur = entries[`w|${split}|${wi}|${rid}`];
-    const wPrev = entries[`w|${split}|${wi - 1}|${rid}`];
+    const prevKey = dateKey(addDays(keyToDate(dk), -7));
+    const wCur = entries[`wd|${split}|${dk}|${rid}`];
+    const wPrev = entries[`wd|${split}|${prevKey}|${rid}`];
     if (!wCur || !wPrev)
         return null;
     const wCurNum = parseFloat(wCur), wPrevNum = parseFloat(wPrev);
     if (isNaN(wCurNum) || isNaN(wPrevNum) || wCurNum !== wPrevNum)
         return null;
-    const rCur = entries[`r|${split}|${wi}|${rid}|${si}`];
-    const rPrev = entries[`r|${split}|${wi - 1}|${rid}|${si}`];
+    const rCur = entries[`rd|${split}|${dk}|${rid}|${si}`];
+    const rPrev = entries[`rd|${split}|${prevKey}|${rid}|${si}`];
     if (!rCur || !rPrev)
         return null;
     const rCurNum = parseInt(rCur, 10), rPrevNum = parseInt(rPrev, 10);
@@ -236,20 +234,8 @@ function computeRepColor(entries, split, wi, rid, si) {
 // ============================================================
 // COLOR CODING MODULE (end)
 // ============================================================
-function dims(availW) {
-    const desktop = availW >= 640;
-    let LEFT = Math.round(availW * (desktop ? 0.15 : 0.255));
-    LEFT = Math.max(desktop ? 150 : 98, Math.min(desktop ? 210 : 142, LEFT));
-    const region = availW - LEFT;
-    const vis = desktop ? Math.max(2, Math.min(4, Math.floor(region / 240))) : 1;
-    const PANEL = Math.floor(region / vis);
-    const R = Math.floor((PANEL * 0.66) / 5);
-    const W = PANEL - 5 * R;
-    return { LEFT, W, R, PANEL, vis, desktop };
-}
-// Same column math as dims(), but always a single full-width panel — used
-// by the focused "This Workout" view, which never needs multiple weeks
-// side by side.
+// Column math for the focused "This Workout" table (exercise name column +
+// WEIGHT + 5 set columns).
 function dimsFocused(availW) {
     const desktop = availW >= 640;
     let LEFT = Math.round(availW * (desktop ? 0.15 : 0.255));
@@ -259,35 +245,49 @@ function dimsFocused(availW) {
     const W = PANEL - 5 * R;
     return { LEFT, W, R, PANEL };
 }
-// MM/DD/YY <-> Date helpers, used by the Monday auto-fill logic.
-function parseMDY(str) {
-    const m = /^(\d{2})\/(\d{2})\/(\d{2})$/.exec(str || "");
-    if (!m)
-        return null;
-    const mm = parseInt(m[1], 10), dd = parseInt(m[2], 10), yy = parseInt(m[3], 10);
-    const d = new Date(2000 + yy, mm - 1, dd);
-    return isNaN(d.getTime()) ? null : d;
+// Whether a given real date has any reps logged (drives the calendar's
+// green highlight).
+function dayHasReps(entries, split, d) {
+    const di = diForDate(d);
+    if (di === null)
+        return false;
+    const dk = dateKey(d);
+    return rowsForDay(split, di).some((r) => {
+        for (let si = 0; si < r.sets; si++) {
+            if (entries[`rd|${split}|${dk}|${r.rid}|${si}`])
+                return true;
+        }
+        return false;
+    });
 }
-function formatMDY(d) {
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    const yy = String(d.getFullYear() % 100).padStart(2, "0");
-    return `${mm}/${dd}/${yy}`;
+// Builds the grid of calendar cells for a given displayed month (Sun-start
+// weeks, only as many rows as the month actually needs).
+function buildMonthGrid(viewMonth) {
+    const first = startOfMonth(viewMonth);
+    const startDow = first.getDay();
+    const gridStart = addDays(first, -startDow);
+    const daysInMonth = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 0).getDate();
+    const totalCells = Math.ceil((startDow + daysInMonth) / 7) * 7;
+    const cells = [];
+    for (let i = 0; i < totalCells; i++) {
+        const d = addDays(gridStart, i);
+        cells.push({ date: d, inMonth: sameMonth(d, viewMonth) });
+    }
+    return cells;
 }
 const BASE_INPUT_STYLE = {
     width: "100%", height: "100%", border: "none", background: "transparent",
     textAlign: "center", fontSize: 16, fontWeight: 600, color: "#26221D",
     fontFamily: "inherit", fontVariantNumeric: "tabular-nums", padding: 0, margin: 0, outline: "none",
 };
-function Input({ value, onChange, kind, ph, fs }) {
-    return (React.createElement("input", { className: "wl-input", type: "text", inputMode: "decimal", placeholder: ph, value: value || "", onChange: onChange, style: fs ? { ...BASE_INPUT_STYLE, fontSize: fs } : BASE_INPUT_STYLE }));
+function Input({ value, onChange, fs }) {
+    return (React.createElement("input", { className: "wl-input", type: "text", inputMode: "decimal", placeholder: "", value: value || "", onChange: onChange, style: fs ? { ...BASE_INPUT_STYLE, fontSize: fs } : BASE_INPUT_STYLE }));
 }
 function App() {
-    const [split, setSplitState] = useState(0);
-    const [curWeek, setCurWeek] = useState(0);
-    const [weekCount, setWeekCount] = useState({ 0: 2, 1: 2, 2: 2 });
+    const [split] = useState(0); // only one program for now; kept as state for when custom programs return
     const [entries, setEntries] = useState({});
-    const [focusedDay, setFocusedDay] = useState(null); // null | { wi, di }
+    const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
+    const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
     const [vw, setVw] = useState(390);
     const [menuOpen, setMenuOpen] = useState(false);
     const [restoreText, setRestoreText] = useState("");
@@ -299,35 +299,43 @@ function App() {
     const [syncStatus, setSyncStatus] = useState("");
     const [syncOk, setSyncOk] = useState(true);
     const wrapRef = useRef(null);
-    const scrollRef = useRef(null);
-    const panelWidthRef = useRef(278);
     const saveTimer = useRef(null);
     const pushTimer = useRef(null);
     const supaRef = useRef(null);
     const uidRef = useRef(null);
     const pullingRef = useRef(false);
     const skipFirstSave = useRef(true);
-    const dirtyRef = useRef(new Set()); // entry keys with local edits not yet confirmed pushed
-    const stateRef = useRef({ weekCount, entries });
-    stateRef.current = { weekCount, entries };
-    const splitRef = useRef(split);
-    splitRef.current = split;
-    const vwRef = useRef(vw);
-    vwRef.current = vw;
-    const positionedRef = useRef(false);
-    // Load local data on mount
+    const dirtyRef = useRef(new Set());
+    const stateRef = useRef({ entries });
+    stateRef.current = { entries };
+    const migratedRef = useRef(false);
+    // Load local data, then run the one-time (additive, idempotent) migration
     useEffect(() => {
         try {
             const raw = localStorage.getItem(LOCAL_KEY);
             if (raw) {
                 const d = JSON.parse(raw);
-                if (d.weekCount)
-                    setWeekCount((wc) => Object.assign({}, wc, d.weekCount));
                 if (d.entries)
                     setEntries(d.entries);
             }
         }
         catch (e) { }
+    }, []);
+    useEffect(() => {
+        const t = setTimeout(() => {
+            if (migratedRef.current)
+                return;
+            migratedRef.current = true;
+            setEntries((cur) => {
+                const { next, migrated } = migrateLegacyEntries(cur);
+                if (migrated > 0) {
+                    dirtyRef.current = new Set(Object.keys(next));
+                    return next;
+                }
+                return cur;
+            });
+        }, 1200); // after local load + a chance for sync to land, so we migrate the fullest picture
+        return () => clearTimeout(t);
     }, []);
     // Measure width
     useEffect(() => {
@@ -341,33 +349,6 @@ function App() {
         });
         ro.observe(el);
         return () => ro.disconnect();
-    }, []);
-    // Auto-scroll to the latest day with any reps logged, once on open.
-    // Delayed briefly so a background sync pull has a chance to land first.
-    useEffect(() => {
-        const t = setTimeout(() => {
-            if (positionedRef.current)
-                return;
-            positionedRef.current = true;
-            const sp = splitRef.current;
-            const { weekCount: wc, entries: en } = stateRef.current;
-            const rowsNow = flatRows(sp);
-            const target = findLatestDayWithReps(en, sp, wc, rowsNow);
-            if (!target)
-                return;
-            const { vis } = dims(vwRef.current);
-            const totalWeeks = wc[sp] || 1;
-            const maxStartNow = Math.max(0, totalWeeks - vis);
-            const wiClamped = Math.max(0, Math.min(maxStartNow, target.wi));
-            const top = computeDayScrollTop(rowsNow, target.di);
-            setCurWeek(wiClamped);
-            requestAnimationFrame(() => {
-                const el = scrollRef.current;
-                if (el)
-                    el.scrollTo({ left: wiClamped * panelWidthRef.current, top, behavior: "auto" });
-            });
-        }, 1000);
-        return () => clearTimeout(t);
     }, []);
     const persistLocal = useCallback(() => {
         try {
@@ -429,12 +410,6 @@ function App() {
                             merged[k] = cur[k];
                     });
                     return merged;
-                });
-                setWeekCount((cur) => {
-                    const wc = Object.assign({}, cur);
-                    const rwc = remote.weekCount || {};
-                    [0, 1, 2].forEach((i) => { wc[i] = Math.max(wc[i] || 1, rwc[i] || 1); });
-                    return wc;
                 });
                 setTimeout(() => { persistLocal(); pullingRef.current = false; pushRemote(); }, 0);
             }
@@ -508,124 +483,31 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [weekCount, entries, persistLocal, schedulePush]);
+    }, [entries, persistLocal, schedulePush]);
     const C = colors(ACCENT);
-    const rows = flatRows(split);
-    const weeks = weekCount[split] || 1;
-    const { LEFT, W, R, PANEL, vis } = dims(vw);
-    panelWidthRef.current = PANEL;
-    const maxStart = useCallback(() => {
-        const total = weekCount[split] || 1;
-        return Math.max(0, total - vis);
-    }, [weekCount, split, vis]);
-    const goWeek = useCallback((i) => {
-        const clamped = Math.max(0, Math.min(maxStart(), i));
-        const el = scrollRef.current;
-        if (el)
-            el.scrollTo({ left: clamped * panelWidthRef.current, behavior: "smooth" });
-        setCurWeek(clamped);
-    }, [maxStart]);
-    const onScroll = () => {
-        const el = scrollRef.current;
-        if (!el)
-            return;
-        const w = Math.round(el.scrollLeft / panelWidthRef.current);
-        const cw = Math.max(0, Math.min(maxStart(), w));
-        setCurWeek((prev) => (prev !== cw ? cw : prev));
-    };
-    const setSplit = (i) => {
-        setSplitState(i);
-        setCurWeek(0);
-        setFocusedDay(null);
-        if (scrollRef.current)
-            scrollRef.current.scrollLeft = 0;
-    };
-    const addWeek = () => {
-        setWeekCount((wc) => {
-            const next = Object.assign({}, wc);
-            next[split] = (next[split] || 1) + 1;
-            return next;
-        });
-        requestAnimationFrame(() => requestAnimationFrame(() => goWeek(maxStart() + 1)));
-    };
     // ---- Previous/Next Workout (focused view navigation) ----
-    // Jumps by the program's Repeat Frequency, so it lands on the same
-    // recurring workout (e.g. "next Monday's session") rather than just the
-    // next calendar day.
-    const totalWorkoutsInSplit = (weekCount[split] || 1) * 5;
-    const repeatFrequency = SPLITS[split].repeatFrequency || 5;
-    const focusedIdx = focusedDay ? workoutIndex(focusedDay.wi, focusedDay.di) : -1;
-    const hasPrevWorkout = focusedDay && focusedIdx - repeatFrequency >= 0;
-    const hasNextWorkout = focusedDay && focusedIdx + repeatFrequency < totalWorkoutsInSplit;
-    const goPrevWorkout = () => {
-        const target = workoutFromIndex(focusedIdx - repeatFrequency, weekCount[split] || 1);
-        if (target)
-            setFocusedDay(target);
-    };
-    const goNextWorkout = () => {
-        const target = workoutFromIndex(focusedIdx + repeatFrequency, weekCount[split] || 1);
-        if (target)
-            setFocusedDay(target);
-    };
+    const repeatFrequency = SPLITS[split].repeatFrequency || 7;
+    const goPrevWorkout = () => { if (focusedDate)
+        setFocusedDate(dateKey(addDays(keyToDate(focusedDate), -repeatFrequency))); };
+    const goNextWorkout = () => { if (focusedDate)
+        setFocusedDate(dateKey(addDays(keyToDate(focusedDate), repeatFrequency))); };
     const goHome = () => {
-        const from = focusedDay;
-        setFocusedDay(null);
-        if (!from)
-            return;
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-            const el = scrollRef.current;
-            if (!el)
-                return;
-            const { vis } = dims(vwRef.current);
-            const totalWeeks = weekCount[split] || 1;
-            const maxStartNow = Math.max(0, totalWeeks - vis);
-            const wiClamped = Math.max(0, Math.min(maxStartNow, from.wi));
-            const top = computeDayScrollTop(flatRows(split), from.di);
-            setCurWeek(wiClamped);
-            el.scrollTo({ left: wiClamped * panelWidthRef.current, top, behavior: "auto" });
-        }));
+        setFocusedDate(null);
+        setViewMonth(startOfMonth(new Date()));
+    };
+    const openWorkout = (d) => {
+        if (diForDate(d) === null)
+            return; // weekend, no program day
+        setFocusedDate(dateKey(d));
     };
     const setEntry = (key, val, kind) => {
         let v = val;
-        if (kind === "date") {
-            const d = val.replace(/\D/g, "").slice(0, 6);
-            v = d.slice(0, 2);
-            if (d.length > 2)
-                v += "/" + d.slice(2, 4);
-            if (d.length > 4)
-                v += "/" + d.slice(4, 6);
-        }
-        else if (kind === "weight") {
+        if (kind === "weight")
             v = val.replace(/[^0-9.]/g, "").slice(0, 6);
-        }
-        else {
+        else
             v = val.replace(/[^0-9]/g, "").slice(0, 3);
-        }
         dirtyRef.current.add(key);
-        setEntries((s) => {
-            const next = Object.assign({}, s, { [key]: v });
-            // Monday date auto-fill: once a complete Monday date is entered,
-            // fill in Tue-Fri for the same week/split with consecutive calendar
-            // days — but only into cells that are still empty.
-            if (kind === "date" && v.length === 8) {
-                const m = /^d\|(\d+)\|(\d+)\|0$/.exec(key);
-                if (m) {
-                    const base = parseMDY(v);
-                    if (base) {
-                        for (let off = 1; off <= 4; off++) {
-                            const targetKey = `d|${m[1]}|${m[2]}|${off}`;
-                            if (!next[targetKey]) {
-                                const nd = new Date(base);
-                                nd.setDate(nd.getDate() + off);
-                                next[targetKey] = formatMDY(nd);
-                                dirtyRef.current.add(targetKey);
-                            }
-                        }
-                    }
-                }
-            }
-            return next;
-        });
+        setEntries((s) => Object.assign({}, s, { [key]: v }));
     };
     // ---- Auth ----
     const signIn = async () => {
@@ -690,7 +572,7 @@ function App() {
         setSyncOk(true);
     };
     // ---- Backup / restore ----
-    const backupString = () => JSON.stringify({ app: "workoutlog", v: 1, savedAt: new Date().toISOString(), weekCount, entries });
+    const backupString = () => JSON.stringify({ app: "workoutlog", v: 2, savedAt: new Date().toISOString(), entries });
     const doDownload = () => {
         try {
             const blob = new Blob([backupString()], { type: "application/json" });
@@ -766,15 +648,12 @@ function App() {
             setStatusOk(false);
             return;
         }
-        const wc = Object.assign({ 0: 2, 1: 2, 2: 2 }, d.weekCount || {});
         const n = Object.keys(d.entries).length;
-        setWeekCount(wc);
         setEntries(d.entries);
-        setCurWeek(0);
+        migratedRef.current = false; // let migration re-scan the restored data
+        setFocusedDate(null);
         setStatus(`Restored ${n} saved value${n === 1 ? "" : "s"}. ✓`);
         setStatusOk(true);
-        if (scrollRef.current)
-            scrollRef.current.scrollLeft = 0;
     };
     const onRestoreFile = (e) => {
         const file = e.target.files && e.target.files[0];
@@ -786,71 +665,24 @@ function App() {
         reader.readAsText(file);
         e.target.value = "";
     };
-    // ---- grid rendering ----
+    // ---- shared cell helpers ----
     const cellBorder = `1px solid ${C.line}`;
     const darkBorder = `2px solid #B7AD9C`;
     const headCell = (label, w, sub, darkR) => (React.createElement("div", { key: "h" + label, style: { flex: `0 0 ${w}px`, width: w, borderBottom: cellBorder, borderRight: darkR ? darkBorder : cellBorder, borderLeft: darkR ? darkBorder : "none", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 } },
         React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".04em", color: C.muted } }, label),
         sub ? React.createElement("div", { style: { fontSize: 10, fontWeight: 600, color: C.muted, opacity: 0.7 } }, sub) : null));
     const dataCell = (key, w, content, bg, darkR) => (React.createElement("div", { key: key, style: { flex: `0 0 ${w}px`, width: w, borderBottom: cellBorder, borderRight: darkR ? darkBorder : cellBorder, borderLeft: darkR ? darkBorder : "none", background: bg || "transparent", padding: "5px 4px", display: "flex" } }, content));
-    const leftChildren = [
-        React.createElement("div", { key: "corner", style: { position: "sticky", top: 0, zIndex: 6, height: HEAD, background: C.headBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "EXERCISE"),
-    ];
-    rows.forEach((r) => {
-        if (r.t === "day") {
-            leftChildren.push(React.createElement("div", { key: "ld" + r.di, style: { height: DAY, background: C.dayBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 13.5, fontWeight: 800, letterSpacing: ".06em", color: C.dayInk } }, r.label));
-        }
-        else {
-            leftChildren.push(React.createElement("div", { key: "lx" + r.rid, style: { height: EX, background: "#fff", borderBottom: cellBorder, borderRight: darkBorder, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 11px", gap: 2 } },
-                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, color: C.ink, lineHeight: 1.14 } }, r.base),
-                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.a, letterSpacing: ".02em" } }, r.spec)));
-        }
-    });
-    const panels = [];
-    for (let wi = 0; wi < weeks; wi++) {
-        const pc = [
-            React.createElement("div", { key: "ph", style: { position: "sticky", top: 0, zIndex: 2, height: HEAD, display: "flex", background: C.headBg } },
-                headCell("WEIGHT", W, "lb", true),
-                headCell("S1", R),
-                headCell("S2", R),
-                headCell("S3", R),
-                headCell("S4", R),
-                headCell("S5", R)),
-        ];
-        rows.forEach((r) => {
-            if (r.t === "day") {
-                const dateKey = `d|${split}|${wi}|${r.di}`;
-                pc.push(React.createElement("div", { key: "pd" + r.di, style: { height: DAY, display: "flex" } },
-                    dataCell("date" + r.di, W, React.createElement(Input, { value: entries[dateKey], onChange: (e) => setEntry(dateKey, e.target.value, "date"), kind: "date", ph: "MM/DD/YY", fs: 14 }), C.dayBg, true),
-                    React.createElement("div", { onClick: () => setFocusedDay({ wi, di: r.di }), style: { flex: `0 0 ${5 * R}px`, width: 5 * R, borderBottom: cellBorder, borderRight: darkBorder, background: C.dayBg, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" } },
-                        React.createElement("span", { style: { fontSize: 12.5, fontWeight: 800, color: C.a, letterSpacing: ".03em" } }, "This Workout"))));
-            }
-            else {
-                const wKey = `w|${split}|${wi}|${r.rid}`;
-                const reps = [0, 1, 2, 3, 4].map((si) => {
-                    if (si < r.sets) {
-                        const repColor = computeRepColor(entries, split, wi, r.rid, si);
-                        return (React.createElement("div", { key: "r" + si, style: { flex: `0 0 ${R}px`, width: R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
-                            React.createElement(Input, { value: entries[`r|${split}|${wi}|${r.rid}|${si}`], onChange: (e) => setEntry(`r|${split}|${wi}|${r.rid}|${si}`, e.target.value, "rep"), kind: "rep", ph: "" })));
-                    }
-                    return (React.createElement("div", { key: "r" + si, style: { flex: `0 0 ${R}px`, width: R, borderBottom: cellBorder, borderRight: cellBorder, background: C.disabled, backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.028) 5px, rgba(0,0,0,0.028) 6px)" } }));
-                });
-                pc.push(React.createElement("div", { key: "px" + r.rid, style: { height: EX, display: "flex" } },
-                    dataCell("weight" + r.rid, W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight"), kind: "weight", ph: "" }), "#fff", true),
-                    reps));
-            }
-        });
-        panels.push(React.createElement("div", { key: "wk" + wi, style: { flex: `0 0 ${PANEL}px`, width: PANEL, scrollSnapAlign: "start", position: "relative" } }, pc));
-    }
-    // ---- Focused "This Workout" single-day view ----
+    // ---- Focused "This Workout" view content ----
     let focusedContent = null;
-    if (focusedDay) {
+    let focusedTitle = "";
+    if (focusedDate) {
         const fDims = dimsFocused(vw);
-        const fRows = rows.filter((r) => r.t === "ex" && r.di === focusedDay.di);
-        const fDateKey = `d|${split}|${focusedDay.wi}|${focusedDay.di}`;
+        const fDateObj = keyToDate(focusedDate);
+        const di = diForDate(fDateObj);
+        const fRows = di === null ? [] : rowsForDay(split, di);
+        focusedTitle = formatLongDate(fDateObj);
         const fLeft = [
             React.createElement("div", { key: "fcorner", style: { position: "sticky", top: 0, zIndex: 6, height: HEAD, background: C.headBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "EXERCISE"),
-            React.createElement("div", { key: "fdayname", style: { height: DAY, background: C.dayBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 13.5, fontWeight: 800, letterSpacing: ".06em", color: C.dayInk } }, SPLITS[split].days[focusedDay.di].day),
         ];
         fRows.forEach((r) => {
             fLeft.push(React.createElement("div", { key: "flx" + r.rid, style: { height: EX, background: "#fff", borderBottom: cellBorder, borderRight: darkBorder, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 11px", gap: 2 } },
@@ -865,71 +697,95 @@ function App() {
                 headCell("S3", fDims.R),
                 headCell("S4", fDims.R),
                 headCell("S5", fDims.R)),
-            React.createElement("div", { key: "fdaterow", style: { height: DAY, display: "flex" } },
-                dataCell("fdate", fDims.W, (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", fontSize: 14, fontWeight: 600, color: C.ink } }, entries[fDateKey] || "—")), C.dayBg, true),
-                React.createElement("div", { style: { flex: `0 0 ${5 * fDims.R}px`, width: 5 * fDims.R, borderBottom: cellBorder, borderRight: darkBorder, background: C.dayBg } })),
         ];
         fRows.forEach((r) => {
-            const wKey = `w|${split}|${focusedDay.wi}|${r.rid}`;
+            const wKey = `wd|${split}|${focusedDate}|${r.rid}`;
             const reps = [0, 1, 2, 3, 4].map((si) => {
                 if (si < r.sets) {
-                    const repColor = computeRepColor(entries, split, focusedDay.wi, r.rid, si);
+                    const repColor = computeRepColor(entries, split, focusedDate, r.rid, si);
                     return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
-                        React.createElement(Input, { value: entries[`r|${split}|${focusedDay.wi}|${r.rid}|${si}`], onChange: (e) => setEntry(`r|${split}|${focusedDay.wi}|${r.rid}|${si}`, e.target.value, "rep"), kind: "rep", ph: "" })));
+                        React.createElement(Input, { value: entries[`rd|${split}|${focusedDate}|${r.rid}|${si}`], onChange: (e) => setEntry(`rd|${split}|${focusedDate}|${r.rid}|${si}`, e.target.value, "rep") })));
                 }
                 return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: C.disabled, backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.028) 5px, rgba(0,0,0,0.028) 6px)" } }));
             });
             fPanelRows.push(React.createElement("div", { key: "fpx" + r.rid, style: { height: EX, display: "flex" } },
-                dataCell("fweight" + r.rid, fDims.W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight"), kind: "weight", ph: "" }), "#fff", true),
+                dataCell("fweight" + r.rid, fDims.W, React.createElement(Input, { value: entries[wKey], onChange: (e) => setEntry(wKey, e.target.value, "weight") }), "#fff", true),
                 reps));
         });
         focusedContent = (React.createElement("div", { style: { display: "flex", width: fDims.LEFT + fDims.PANEL, minWidth: "100%" } },
             React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${fDims.LEFT}px`, width: fDims.LEFT, background: "#fff" } }, fLeft),
             React.createElement("div", { style: { flex: `0 0 ${fDims.PANEL}px`, width: fDims.PANEL } }, fPanelRows)));
     }
-    const weekWord = vis > 1 ? "Weeks" : "Week";
-    const weekLabel = (() => {
-        const total = weekCount[split] || 1;
-        const start = Math.min(curWeek, Math.max(0, total - vis));
-        const first = start + 1;
-        const last = Math.min(start + vis, total);
-        return vis > 1 && last > first ? `${first}–${last}` : String(first);
-    })();
-    const optBase = { border: "none", cursor: "pointer", borderRadius: 9, padding: "6px 11px", fontFamily: "inherit", fontSize: 12.5, lineHeight: 1 };
+    // ---- Calendar view content ----
+    const today = new Date();
+    const monthCells = buildMonthGrid(viewMonth);
+    const calRows = [];
+    for (let i = 0; i < monthCells.length; i += 7)
+        calRows.push(monthCells.slice(i, i + 7));
     return (React.createElement("div", { style: { minHeight: "100dvh", display: "flex", justifyContent: "center", background: "#EAE6DF", fontFamily: "Manrope, system-ui, sans-serif" } },
         React.createElement("style", null, `
         .wl-input::placeholder { color: #CFC8BC; font-weight: 500; }
         .wl-input:focus { outline: none; background: color-mix(in oklab, ${C.a} 8%, #fff); box-shadow: inset 0 0 0 2px ${C.a}; border-radius: 7px; }
+        .wl-daybtn { cursor: pointer; border: none; background: transparent; font-family: inherit; }
+        .wl-daybtn:disabled { cursor: default; }
       `),
         React.createElement("div", { ref: wrapRef, style: { position: "relative", width: "100%", maxWidth: 1200, height: "100dvh", background: "#FFFFFF", overflow: "hidden", margin: "0 auto" } },
-            React.createElement("div", { style: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 5, background: "#FFFFFF", borderBottom: "1px solid #ECE7DE", boxShadow: "0 6px 18px -12px rgba(0,0,0,0.18)", height: "calc(env(safe-area-inset-top, 0px) + 118px)", padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 0", boxSizing: "border-box" } },
+            React.createElement("div", { style: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 5, background: "#FFFFFF", borderBottom: "1px solid #ECE7DE", boxShadow: "0 6px 18px -12px rgba(0,0,0,0.18)", minHeight: "calc(env(safe-area-inset-top, 0px) + 118px)", padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", boxSizing: "border-box" } },
                 React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 } },
                     React.createElement("div", null,
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".14em", color: "#A79F93", marginBottom: 3 } }, "WORKOUT LOG"),
                         React.createElement("div", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "-.01em", color: "#26221D", lineHeight: 1 } }, SPLITS[split].title)),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexShrink: 0 } },
-                        React.createElement("div", { style: { display: "flex", gap: 2, background: "#F1EDE6", border: "1px solid #E7E1D7", borderRadius: 12, padding: 3 } }, [0, 1, 2].map((i) => (React.createElement("button", { key: i, onClick: () => setSplit(i), style: i === split ? { ...optBase, background: "#fff", color: C.a, fontWeight: 800, boxShadow: "0 1px 3px rgba(0,0,0,0.12)" } : { ...optBase, background: "transparent", color: "#A79F93", fontWeight: 700 } }, SPLITS[i].short)))),
                         React.createElement("button", { onClick: () => { setMenuOpen(true); setStatus(""); setRestoreText(""); }, title: "Backup & Restore", style: { width: 34, height: 34, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, color: "#5E574C", fontSize: 19, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u22EF"))),
-                focusedDay ? (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 14 } },
-                    React.createElement("button", { onClick: goPrevWorkout, disabled: !hasPrevWorkout, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: hasPrevWorkout ? "pointer" : "default", opacity: hasPrevWorkout ? 1 : 0.4 } }, "\u2039 Previous Workout"),
-                    React.createElement("button", { onClick: goHome, style: { border: "none", cursor: "pointer", background: C.a, color: "#fff", borderRadius: 10, padding: "9px 18px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1 } }, "Home"),
-                    React.createElement("button", { onClick: goNextWorkout, disabled: !hasNextWorkout, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: hasNextWorkout ? "pointer" : "default", opacity: hasNextWorkout ? 1 : 0.4 } }, "Next Workout \u203A"))) : (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 } },
-                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                        React.createElement("button", { onClick: () => goWeek(curWeek - 1), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u2039"),
-                        React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#26221D", minWidth: 96, textAlign: "center" } },
-                            weekWord,
-                            " ",
-                            weekLabel,
-                            " ",
-                            React.createElement("span", { style: { color: "#A79F93", fontWeight: 600 } },
-                                "of ",
-                                weekCount[split] || 1)),
-                        React.createElement("button", { onClick: () => goWeek(curWeek + 1), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u203A")),
-                    React.createElement("button", { onClick: addWeek, style: { border: "none", cursor: "pointer", background: C.a, color: "#fff", borderRadius: 10, padding: "9px 15px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1 } }, "+ Week")))),
-            focusedDay ? (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 118px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)" } }, focusedContent)) : (React.createElement("div", { ref: scrollRef, className: "wl-scroll", onScroll: onScroll, style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 118px)", left: 0, right: 0, bottom: 0, overflow: "auto", scrollSnapType: "x proximity", scrollPaddingLeft: LEFT, WebkitOverflowScrolling: "touch", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)", "--accent": C.a } },
-                React.createElement("div", { style: { display: "flex", width: LEFT + weeks * PANEL, minWidth: "100%" } },
-                    React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${LEFT}px`, width: LEFT, background: "#fff" } }, leftChildren),
-                    panels))),
+                focusedDate ? (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 14 } },
+                    React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: "#26221D", textAlign: "center" } }, focusedTitle),
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8 } },
+                        React.createElement("button", { onClick: goPrevWorkout, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "\u2039 Previous Workout"),
+                        React.createElement("button", { onClick: goHome, style: { border: "none", cursor: "pointer", background: C.a, color: "#fff", borderRadius: 10, padding: "9px 18px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1 } }, "Home"),
+                        React.createElement("button", { onClick: goNextWorkout, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "Next Workout \u203A")))) : (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 } },
+                    React.createElement("button", { onClick: () => setViewMonth((m) => addDays(startOfMonth(m), -1)), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u2039"),
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: "#26221D" } },
+                        MONTH_NAMES[viewMonth.getMonth()],
+                        " ",
+                        viewMonth.getFullYear()),
+                    React.createElement("button", { onClick: () => setViewMonth((m) => addDays(new Date(m.getFullYear(), m.getMonth() + 1, 1), 0)), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u203A"))),
+                !focusedDate && !sameMonth(viewMonth, today) && (React.createElement("button", { onClick: () => setViewMonth(startOfMonth(today)), style: { marginTop: 10, width: "100%", padding: "8px 0", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } }, "Today"))),
+            focusedDate ? (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 166px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)" } }, focusedContent)) : (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 118px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", padding: "18px 16px calc(env(safe-area-inset-bottom, 0px) + 28px)" } },
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 8 } }, WEEKDAY_LETTERS.map((d, i) => (React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, d)))),
+                calRows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 } }, row.map((cell, ci) => {
+                    const isWeekend = ci === 0 || ci === 6;
+                    const isToday = sameDate(cell.date, today);
+                    const logged = cell.inMonth && !isWeekend && dayHasReps(entries, split, cell.date);
+                    const disabled = !cell.inMonth || isWeekend;
+                    let bg = "transparent", fg = cell.inMonth ? C.ink : "#D8D2C6", ring = null;
+                    if (logged) {
+                        bg = REP_COLOR_BG.green;
+                        ring = "#2FAE66";
+                        fg = cell.inMonth ? "#1B7A46" : fg;
+                    }
+                    else if (isWeekend) {
+                        fg = "#D8D2C6";
+                    }
+                    return (React.createElement("div", { key: ci, style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 0" } },
+                        React.createElement("div", { style: {
+                                width: 42, height: 42, borderRadius: 10, boxSizing: "border-box",
+                                border: isToday && cell.inMonth ? `2.5px solid ${TODAY_BLUE}` : "none",
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                            } },
+                            React.createElement("button", { className: "wl-daybtn", disabled: disabled, onClick: () => openWorkout(cell.date), style: {
+                                    width: 34, height: 34, borderRadius: "50%",
+                                    background: bg,
+                                    border: ring ? `2px solid ${ring}` : "none",
+                                    color: fg, fontSize: 14, fontWeight: isToday ? 800 : 600,
+                                } }, cell.date.getDate()))));
+                })))),
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 20, marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.line}` } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                        React.createElement("div", { style: { width: 14, height: 14, borderRadius: 4, border: `2.5px solid ${TODAY_BLUE}`, boxSizing: "border-box" } }),
+                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Today")),
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                        React.createElement("div", { style: { width: 12, height: 12, borderRadius: "50%", background: REP_COLOR_BG.green, border: "2px solid #2FAE66" } }),
+                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Logged workout"))))),
             menuOpen && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
