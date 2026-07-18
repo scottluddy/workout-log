@@ -26,6 +26,7 @@
   a:hover { color: #FF5B35; }
   .wl-scroll { scrollbar-width: none; }
   .wl-scroll::-webkit-scrollbar { display: none; }
+  .wl-ph-gray::placeholder { color: #B9B2A6; font-weight: 500; }
   #root { font-family: Manrope, system-ui, sans-serif; }
   #__diag_err { position: fixed; bottom: 12px; left: 12px; right: 12px; font: 12px/1.4 ui-monospace,monospace; background: #2a1215; color: #ff8a80; padding: 10px 14px; border-radius: 8px; border: 1px solid #5c2b2e; z-index: 99999; white-space: pre-wrap; max-height: 40vh; overflow: auto; display: none; }
 </style>
@@ -72,6 +73,12 @@ const TODAY_BLUE = "#3E7BFA";
 const COLOR_CODE_ENABLED = true;
 const LOCAL_KEY = "wsl_v3";
 const BUILTIN_ID = 0; // Split 4.0's program id — matches the historical `0` already baked into existing entry keys. Never change this.
+// To remove the "Add Manually" program builder, set this to false — or
+// delete the whole block marked "MANUAL PROGRAM BUILDER" further down,
+// plus the "Add Manually" button in the My Programs section. Programs you
+// already built manually are stored as plain data (identical in shape to
+// uploaded ones) and are completely unaffected either way.
+const MANUAL_PROGRAM_BUILDER_ENABLED = true;
 // ---- Your Supabase project (from the original app) ----
 const SUPA_URL = "https://wbotaefcsxxlvbytmpxh.supabase.co";
 const SUPA_KEY = "sb_publishable_e1TCH4HPHgxASiYOa6zmyg_X4LmufIJ";
@@ -385,6 +392,17 @@ function App() {
     const [statusOk, setStatusOk] = useState(true);
     const [programStatus, setProgramStatus] = useState("");
     const [programStatusOk, setProgramStatusOk] = useState(true);
+    // ---- MANUAL PROGRAM BUILDER state (start) ----
+    const [builderOpen, setBuilderOpen] = useState(false);
+    const [builderStep, setBuilderStep] = useState(1); // 1 = choose kind + name, 2 = build content
+    const [builderKind, setBuilderKind] = useState(null); // "weekly" | "custom"
+    const [builderName, setBuilderName] = useState("");
+    const [builderEditingId, setBuilderEditingId] = useState(null); // null = adding new; else editing this program's id
+    const [builderEditingCreatedAt, setBuilderEditingCreatedAt] = useState(null);
+    const [builderDays, setBuilderDays] = useState([]); // [{dow, exercises:[{name,sets,repRange}]}]
+    const [builderDayTypes, setBuilderDayTypes] = useState([]); // [{label, exercises:[...]}]
+    const [builderError, setBuilderError] = useState("");
+    // ---- MANUAL PROGRAM BUILDER state (end) ----
     const [user, setUser] = useState(null);
     const [authEmail, setAuthEmail] = useState("");
     const [authPass, setAuthPass] = useState("");
@@ -705,6 +723,182 @@ function App() {
         reader.onerror = () => { setProgramStatus("Could not read that file."); setProgramStatusOk(false); };
         reader.readAsArrayBuffer(file);
     };
+    // ---- MANUAL PROGRAM BUILDER logic (start) — safe to delete along with
+    // its state block above and the "Add Manually" button further down.
+    const openBuilder = () => {
+        setBuilderOpen(true);
+        setBuilderStep(1);
+        setBuilderKind(null);
+        setBuilderName("");
+        setBuilderDays([]);
+        setBuilderDayTypes([]);
+        setBuilderError("");
+        setBuilderEditingId(null);
+        setBuilderEditingCreatedAt(null);
+    };
+    const closeBuilder = () => setBuilderOpen(false);
+    // Opens the builder pre-filled with an existing program's content.
+    // Existing exercises/day-types keep their original rid/id (so previously
+    // logged weights/reps stay correctly attached); only rows added during
+    // this edit get a fresh id, resolved at save time.
+    const openBuilderForEdit = (program) => {
+        setBuilderEditingId(program.id);
+        setBuilderEditingCreatedAt(program.createdAt || null);
+        setBuilderName(program.name);
+        setBuilderKind(program.kind);
+        setBuilderError("");
+        if (program.kind === "weekly") {
+            setBuilderDays(program.days.filter((d) => d.exercises.length).map((d) => ({
+                dow: d.dow,
+                exercises: d.exercises.map((ex) => ({ rid: ex.rid, name: ex.name, sets: String(ex.sets), repRange: ex.repRange })),
+            })));
+            setBuilderDayTypes([]);
+        }
+        else {
+            setBuilderDayTypes((program.dayTypes || []).map((dt) => ({
+                id: dt.id, label: dt.label,
+                exercises: dt.exercises.map((ex) => ({ rid: ex.rid, name: ex.name, sets: String(ex.sets), repRange: ex.repRange })),
+            })));
+            setBuilderDays([]);
+        }
+        setBuilderStep(2);
+        setBuilderOpen(true);
+    };
+    const chooseBuilderKind = (kind) => {
+        setBuilderKind(kind);
+        setBuilderStep(2);
+        if (kind === "custom" && builderDayTypes.length === 0) {
+            setBuilderDayTypes([{ label: "", exercises: [] }]);
+        }
+    };
+    const toggleBuilderDay = (dow) => {
+        setBuilderDays((cur) => {
+            if (cur.find((d) => d.dow === dow))
+                return cur.filter((d) => d.dow !== dow);
+            return [...cur, { dow, exercises: [] }].sort((a, b) => a.dow - b.dow);
+        });
+    };
+    const addBuilderExercise = (dow) => {
+        setBuilderDays((cur) => cur.map((d) => d.dow === dow ? { ...d, exercises: [...d.exercises, { rid: null, name: "", sets: "", repRange: "" }] } : d));
+    };
+    const updateBuilderExercise = (dow, idx, field, value) => {
+        setBuilderDays((cur) => cur.map((d) => {
+            if (d.dow !== dow)
+                return d;
+            const exercises = d.exercises.map((ex, i) => i === idx ? { ...ex, [field]: value } : ex);
+            return { ...d, exercises };
+        }));
+    };
+    const removeBuilderExercise = (dow, idx) => {
+        setBuilderDays((cur) => cur.map((d) => d.dow === dow ? { ...d, exercises: d.exercises.filter((_, i) => i !== idx) } : d));
+    };
+    const addBuilderDayType = () => setBuilderDayTypes((cur) => [...cur, { label: "", exercises: [] }]);
+    const removeBuilderDayType = (idx) => setBuilderDayTypes((cur) => cur.filter((_, i) => i !== idx));
+    const updateBuilderDayTypeLabel = (idx, label) => setBuilderDayTypes((cur) => cur.map((dt, i) => i === idx ? { ...dt, label } : dt));
+    const addBuilderDayTypeExercise = (idx) => {
+        setBuilderDayTypes((cur) => cur.map((dt, i) => i === idx ? { ...dt, exercises: [...dt.exercises, { rid: null, name: "", sets: "", repRange: "" }] } : dt));
+    };
+    const updateBuilderDayTypeExercise = (dtIdx, exIdx, field, value) => {
+        setBuilderDayTypes((cur) => cur.map((dt, i) => {
+            if (i !== dtIdx)
+                return dt;
+            const exercises = dt.exercises.map((ex, j) => j === exIdx ? { ...ex, [field]: value } : ex);
+            return { ...dt, exercises };
+        }));
+    };
+    const removeBuilderDayTypeExercise = (dtIdx, exIdx) => {
+        setBuilderDayTypes((cur) => cur.map((dt, i) => i === dtIdx ? { ...dt, exercises: dt.exercises.filter((_, j) => j !== exIdx) } : dt));
+    };
+    const saveBuilderProgram = () => {
+        const name = builderName.trim() || (builderKind === "weekly" ? "My Weekly Program" : "My Custom Program");
+        const isEdit = !!builderEditingId;
+        const programId = isEdit ? builderEditingId : ("prog_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8));
+        const createdAt = isEdit ? (builderEditingCreatedAt || new Date().toISOString()) : new Date().toISOString();
+        if (builderKind === "weekly") {
+            const usable = builderDays.filter((d) => d.exercises.some((ex) => ex.name.trim()));
+            if (!usable.length) {
+                setBuilderError("Add at least one day with at least one named exercise.");
+                return;
+            }
+            let maxRid = -1;
+            builderDays.forEach((d) => d.exercises.forEach((ex) => { if (ex.rid !== null && ex.rid !== undefined && ex.rid > maxRid)
+                maxRid = ex.rid; }));
+            let nextRid = maxRid + 1;
+            const days = DOW_NAMES.map((_, dow) => {
+                const d = builderDays.find((x) => x.dow === dow);
+                if (!d)
+                    return { dow, exercises: [] };
+                const exercises = d.exercises.filter((ex) => ex.name.trim()).map((ex) => ({
+                    rid: (ex.rid !== null && ex.rid !== undefined) ? ex.rid : nextRid++,
+                    name: ex.name.trim(), sets: parseInt(ex.sets, 10) || 3, repRange: ex.repRange.trim() || "-",
+                }));
+                return { dow, exercises };
+            });
+            const program = { id: programId, name, kind: "weekly", days, createdAt };
+            setPrograms((cur) => isEdit ? cur.map((p) => p.id === programId ? program : p) : [...cur, program]);
+            programsDirtyRef.current = true;
+            if (!isEdit)
+                setCurrentProgramId(program.id);
+            setFocusedDate(null);
+            setViewMonth(startOfMonth(new Date()));
+            setBuilderOpen(false);
+            setProgramStatus(isEdit ? `Updated "${program.name}". ✓` : `Added "${program.name}" (Weekly) and made it current. ✓`);
+            setProgramStatusOk(true);
+        }
+        else {
+            const usable = builderDayTypes.filter((dt) => dt.label.trim() && dt.exercises.some((ex) => ex.name.trim()));
+            if (!usable.length) {
+                setBuilderError("Add at least one day type (with a name) and at least one named exercise.");
+                return;
+            }
+            let maxRid = -1;
+            builderDayTypes.forEach((dt) => dt.exercises.forEach((ex) => { if (ex.rid !== null && ex.rid !== undefined && ex.rid > maxRid)
+                maxRid = ex.rid; }));
+            let nextRid = maxRid + 1;
+            const usedIds = new Set();
+            usable.forEach((dt) => { if (dt.id)
+                usedIds.add(dt.id); });
+            let idCounter = 0;
+            const nextDtId = () => { while (usedIds.has("dt" + idCounter))
+                idCounter++; const id = "dt" + idCounter; usedIds.add(id); return id; };
+            const dayTypes = usable.map((dt) => ({
+                id: dt.id || nextDtId(), label: dt.label.trim(),
+                exercises: dt.exercises.filter((ex) => ex.name.trim()).map((ex) => ({
+                    rid: (ex.rid !== null && ex.rid !== undefined) ? ex.rid : nextRid++,
+                    name: ex.name.trim(), sets: parseInt(ex.sets, 10) || 3, repRange: ex.repRange.trim() || "-",
+                })),
+            }));
+            const program = { id: programId, name, kind: "custom", dayTypes, createdAt };
+            setPrograms((cur) => isEdit ? cur.map((p) => p.id === programId ? program : p) : [...cur, program]);
+            programsDirtyRef.current = true;
+            if (!isEdit)
+                setCurrentProgramId(program.id);
+            setFocusedDate(null);
+            setViewMonth(startOfMonth(new Date()));
+            setBuilderOpen(false);
+            setProgramStatus(isEdit ? `Updated "${program.name}". ✓` : `Added "${program.name}" (Custom) and made it current. ✓`);
+            setProgramStatusOk(true);
+        }
+    };
+    // ---- MANUAL PROGRAM BUILDER logic (end) ----
+    // Deletes a program (uploaded or manually-built) from My Programs. Does
+    // NOT touch any already-logged entries for it — they simply become
+    // unreachable through the UI unless a program with matching ids is
+    // recreated, rather than being erased from storage.
+    const deleteProgram = (program) => {
+        const ok = window.confirm(`Delete "${program.name}"? It will be removed from My Programs. Any workouts you've already logged under it will stay saved but won't be reachable unless you restore it.`);
+        if (!ok)
+            return;
+        setPrograms((cur) => cur.filter((p) => p.id !== program.id));
+        programsDirtyRef.current = true;
+        if (currentProgramId === program.id) {
+            setCurrentProgramId(BUILTIN_ID);
+            setFocusedDate(null);
+            setViewMonth(startOfMonth(new Date()));
+        }
+        setProgramStatus(`Deleted "${program.name}".`);
+        setProgramStatusOk(true);
+    };
     // ---- Auth ----
     const signIn = async () => {
         const supa = supaRef.current;
@@ -1020,14 +1214,19 @@ function App() {
                                 React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, SPLITS[0].title),
                                 React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, "Built-in")),
                             currentProgramId === BUILTIN_ID && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16 } }, "\u2713")),
-                        programs.map((p, i) => (React.createElement("button", { key: p.id, onClick: () => selectProgram(p.id), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "none", borderBottom: i === programs.length - 1 ? "none" : "1px solid #ECE7DE", background: currentProgramId === p.id ? "#FFF3EE" : "#fff", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
-                            React.createElement("div", null,
-                                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, p.name),
+                        programs.map((p, i) => (React.createElement("div", { key: p.id, onClick: () => selectProgram(p.id), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: i === programs.length - 1 ? "none" : "1px solid #ECE7DE", background: currentProgramId === p.id ? "#FFF3EE" : "#fff", cursor: "pointer" } },
+                            React.createElement("div", { style: { minWidth: 0, marginRight: 8 } },
+                                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
                                 React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, p.kind === "weekly" ? "Weekly" : "Custom")),
-                            currentProgramId === p.id && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16 } }, "\u2713"))))),
-                    React.createElement("label", { style: { display: "block", padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 13, fontWeight: 700, color: C.a, cursor: "pointer", marginBottom: 10 } },
-                        "+ Add Program (upload .xlsx)",
-                        React.createElement("input", { type: "file", accept: ".xlsx", onChange: onAddProgramFile, style: { display: "none" } })),
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, flexShrink: 0 } },
+                                currentProgramId === p.id && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16, marginRight: 2 } }, "\u2713"),
+                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); openBuilderForEdit(p); }, title: "Edit program", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\u270E"),
+                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); deleteProgram(p); }, title: "Delete program", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDDD1")))))),
+                    React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
+                        React.createElement("label", { style: { flex: 1, display: "block", padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } },
+                            "Add From File",
+                            React.createElement("input", { type: "file", accept: ".xlsx", onChange: onAddProgramFile, style: { display: "none" } })),
+                        MANUAL_PROGRAM_BUILDER_ENABLED && (React.createElement("button", { onClick: openBuilder, style: { flex: 1, padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, background: "#fff", textAlign: "center", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer", fontFamily: "inherit" } }, "Add Manually"))),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
                         React.createElement("a", { href: "Weekly_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Weekly template"),
                         React.createElement("a", { href: "Custom_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Custom template")),
@@ -1057,7 +1256,56 @@ function App() {
                         React.createElement("input", { type: "file", accept: ".json,application/json", onChange: onRestoreFile, style: { display: "none" } })),
                     React.createElement("textarea", { value: restoreText, onChange: (e) => setRestoreText(e.target.value), placeholder: "\u2026or paste a backup code here", style: { width: "100%", boxSizing: "border-box", height: 70, border: "1px solid #E7E1D7", borderRadius: 11, padding: 10, fontFamily: "inherit", fontSize: 12, color: "#26221D", resize: "none" } }),
                     React.createElement("button", { onClick: () => applyRestore(restoreText), style: { width: "100%", marginTop: 8, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Restore from code"),
-                    React.createElement("div", { style: { marginTop: 12, minHeight: 16, fontSize: 12.5, fontWeight: 700, textAlign: "center", color: status ? (statusOk ? "#1F8A5B" : "#C0392B") : "transparent" } }, status || "placeholder")))))));
+                    React.createElement("div", { style: { marginTop: 12, minHeight: 16, fontSize: 12.5, fontWeight: 700, textAlign: "center", color: status ? (statusOk ? "#1F8A5B" : "#C0392B") : "transparent" } }, status || "placeholder")))),
+            MANUAL_PROGRAM_BUILDER_ENABLED && builderOpen && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 25, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center" } },
+                React.createElement("div", { style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 } },
+                        React.createElement("button", { onClick: closeBuilder, style: { border: "none", background: "#F1EDE6", borderRadius: 8, width: 30, height: 30, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715"),
+                        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: "#26221D" } }, builderStep === 1 ? "Add Program" : builderEditingId ? "Edit Program" : builderKind === "weekly" ? "Weekly Program" : "Custom Program"),
+                        React.createElement("div", { style: { width: 30 } })),
+                    builderStep === 1 && (React.createElement("div", null,
+                        React.createElement("input", { value: builderName, onChange: (e) => setBuilderName(e.target.value), placeholder: "Program name", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 14 } }),
+                        React.createElement("button", { onClick: () => chooseBuilderKind("weekly"), style: { display: "block", width: "100%", textAlign: "left", padding: "14px 16px", marginBottom: 10, border: "1px solid #E7E1D7", borderRadius: 12, background: "#fff", fontFamily: "inherit", cursor: "pointer" } },
+                            React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, color: C.ink } }, "Weekly Program"),
+                            React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 2 } }, "Pick which days of the week have a workout, and what's on each.")),
+                        React.createElement("button", { onClick: () => chooseBuilderKind("custom"), style: { display: "block", width: "100%", textAlign: "left", padding: "14px 16px", border: "1px solid #E7E1D7", borderRadius: 12, background: "#fff", fontFamily: "inherit", cursor: "pointer" } },
+                            React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, color: C.ink } }, "Custom Program"),
+                            React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 2 } }, "Define day types (e.g. Push/Pull/Legs) and assign them to dates as you go.")))),
+                    builderStep === 2 && builderKind === "weekly" && (React.createElement("div", null,
+                        React.createElement("input", { value: builderName, onChange: (e) => setBuilderName(e.target.value), placeholder: "Program name", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: "#26221D", marginBottom: 16 } }),
+                        React.createElement("div", { style: { fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 4 } }, "Select all the days that will be included in this program:"),
+                        React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "TAP EACH DAY TO ADD IT"),
+                        React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 } }, DOW_NAMES.map((name, dow) => {
+                            const active = builderDays.some((d) => d.dow === dow);
+                            return (React.createElement("button", { key: dow, onClick: () => toggleBuilderDay(dow), style: { padding: "8px 12px", borderRadius: 9, border: active ? "none" : "1px solid #E7E1D7", background: active ? C.a : "#fff", color: active ? "#fff" : "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, name.slice(0, 3)));
+                        })),
+                        builderDays.map((d) => (React.createElement("div", { key: d.dow, style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: 12, marginBottom: 12 } },
+                            React.createElement("div", { style: { fontSize: 13.5, fontWeight: 800, color: C.ink, marginBottom: 8 } }, DOW_NAMES[d.dow]),
+                            d.exercises.map((ex, i) => (React.createElement("div", { key: i, style: { display: "flex", gap: 6, marginBottom: 6, alignItems: "center" } },
+                                React.createElement("input", { value: ex.name, onChange: (e) => updateBuilderExercise(d.dow, i, "name", e.target.value), placeholder: "Exercise", style: { flex: 2.3, minWidth: 0, padding: "8px 9px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 12.5 } }),
+                                React.createElement("input", { className: "wl-ph-gray", value: ex.sets, onChange: (e) => updateBuilderExercise(d.dow, i, "sets", e.target.value.replace(/[^0-9]/g, "")), placeholder: "# of Sets (ex. 3)", inputMode: "numeric", style: { flex: 1.6, minWidth: 0, padding: "8px 5px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 11, textAlign: "center" } }),
+                                React.createElement("input", { className: "wl-ph-gray", value: ex.repRange, onChange: (e) => updateBuilderExercise(d.dow, i, "repRange", e.target.value), placeholder: "Rep Range (ex. 6-8)", style: { flex: 2.1, minWidth: 0, padding: "8px 5px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 11, textAlign: "center" } }),
+                                React.createElement("button", { onClick: () => removeBuilderExercise(d.dow, i), style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 16, cursor: "pointer", padding: "0 2px" } }, "\u2715")))),
+                            React.createElement("button", { onClick: () => addBuilderExercise(d.dow), style: { border: "1px dashed #D8D1C5", background: "#fff", borderRadius: 8, padding: "7px 10px", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: C.a, cursor: "pointer", marginTop: 2 } }, "+ Add Exercise")))))),
+                    builderStep === 2 && builderKind === "custom" && (React.createElement("div", null,
+                        React.createElement("input", { value: builderName, onChange: (e) => setBuilderName(e.target.value), placeholder: "Program name", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: "#26221D", marginBottom: 16 } }),
+                        React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "DAY TYPES"),
+                        builderDayTypes.map((dt, dtIdx) => (React.createElement("div", { key: dtIdx, style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: 12, marginBottom: 12 } },
+                            React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8, alignItems: "center" } },
+                                React.createElement("input", { value: dt.label, onChange: (e) => updateBuilderDayTypeLabel(dtIdx, e.target.value), placeholder: "Day type name (e.g. Push Day)", style: { flex: 1, padding: "8px 9px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 13, fontWeight: 700 } }),
+                                React.createElement("button", { onClick: () => removeBuilderDayType(dtIdx), style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 16, cursor: "pointer", padding: "0 2px" } }, "\u2715")),
+                            dt.exercises.map((ex, exIdx) => (React.createElement("div", { key: exIdx, style: { display: "flex", gap: 6, marginBottom: 6, alignItems: "center" } },
+                                React.createElement("input", { value: ex.name, onChange: (e) => updateBuilderDayTypeExercise(dtIdx, exIdx, "name", e.target.value), placeholder: "Exercise", style: { flex: 2.3, minWidth: 0, padding: "8px 9px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 12.5 } }),
+                                React.createElement("input", { className: "wl-ph-gray", value: ex.sets, onChange: (e) => updateBuilderDayTypeExercise(dtIdx, exIdx, "sets", e.target.value.replace(/[^0-9]/g, "")), placeholder: "# of Sets (ex. 3)", inputMode: "numeric", style: { flex: 1.6, minWidth: 0, padding: "8px 5px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 11, textAlign: "center" } }),
+                                React.createElement("input", { className: "wl-ph-gray", value: ex.repRange, onChange: (e) => updateBuilderDayTypeExercise(dtIdx, exIdx, "repRange", e.target.value), placeholder: "Rep Range (ex. 6-8)", style: { flex: 2.1, minWidth: 0, padding: "8px 5px", border: "1px solid #E7E1D7", borderRadius: 8, fontFamily: "inherit", fontSize: 11, textAlign: "center" } }),
+                                React.createElement("button", { onClick: () => removeBuilderDayTypeExercise(dtIdx, exIdx), style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 16, cursor: "pointer", padding: "0 2px" } }, "\u2715")))),
+                            React.createElement("button", { onClick: () => addBuilderDayTypeExercise(dtIdx), style: { border: "1px dashed #D8D1C5", background: "#fff", borderRadius: 8, padding: "7px 10px", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: C.a, cursor: "pointer", marginTop: 2 } }, "+ Add Exercise")))),
+                        React.createElement("button", { onClick: addBuilderDayType, style: { border: "1px dashed #D8D1C5", background: "#fff", borderRadius: 10, padding: "10px 12px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer", width: "100%", marginBottom: 4 } }, "+ Add Day Type"))),
+                    builderStep === 2 && (React.createElement("div", { style: { marginTop: 8 } },
+                        React.createElement("div", { style: { minHeight: builderError ? 18 : 0, marginBottom: builderError ? 10 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#C0392B" } }, builderError),
+                        React.createElement("div", { style: { display: "flex", gap: 8 } },
+                            React.createElement("button", { onClick: () => builderEditingId ? closeBuilder() : setBuilderStep(1), style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, builderEditingId ? "Cancel" : "Back"),
+                            React.createElement("button", { onClick: saveBuilderProgram, style: { flex: 2, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Save Program"))))))))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
 
