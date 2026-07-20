@@ -146,6 +146,25 @@ function formatLongDate(d) {
     const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     return `${dayNames[d.getDay()]} \u00b7 ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
+// ============================================================
+// STOPWATCH (start) — purely local (not synced), tied to programId+date so
+// leaving and returning to the same workout resumes correctly. Elapsed
+// time is always computed from a real start timestamp rather than counted
+// tick by tick, so it's accurate immediately upon returning from the
+// background even though the display can't visibly animate while
+// backgrounded (a hard iOS/web platform limitation, not fixable from a
+// webpage). Safe to delete along with its state/effects in App() and the
+// "STOPWATCH" section in the focused view.
+function formatStopwatch(ms) {
+    const totalSec = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return h > 0 ? `${h}:${pad2(m)}:${pad2(s)}` : `${m}:${pad2(s)}`;
+}
+// ============================================================
+// STOPWATCH (end)
+// ============================================================
 // legacy MM/DD/YY parser, kept only for migrating old date-cell values
 function parseMDY(str) {
     const m = /^(\d{2})\/(\d{2})\/(\d{2})$/.exec(str || "");
@@ -411,6 +430,13 @@ function Input({ value, onChange, fs }) {
 function App() {
     const [entries, setEntries] = useState({});
     const [programs, setPrograms] = useState([]); // uploaded programs only; Split 4.0 is not in this list
+    const [deletedProgramIds, setDeletedProgramIds] = useState([]); // tombstones — ids that must never come back via sync merge
+    // ---- STOPWATCH state (start) ----
+    const [swRunning, setSwRunning] = useState(false);
+    const [swStartedAt, setSwStartedAt] = useState(null); // ms timestamp of current run segment, or null
+    const [swAccumulatedMs, setSwAccumulatedMs] = useState(0); // ms banked from previous run segments
+    const [swTick, setSwTick] = useState(0); // dummy value bumped to force a re-render while running
+    // ---- STOPWATCH state (end) ----
     const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
@@ -447,7 +473,7 @@ function App() {
     const dirtyRef = useRef(new Set());
     const programsDirtyRef = useRef(false);
     const stateRef = useRef({ entries, programs, currentProgramId });
-    stateRef.current = { entries, programs, currentProgramId };
+    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds };
     const migratedRef = useRef(false);
     // Load local data, then run the one-time (additive, idempotent) migration
     useEffect(() => {
@@ -461,6 +487,8 @@ function App() {
                     setPrograms(d.programs);
                 if (d.currentProgramId !== undefined)
                     setCurrentProgramId(d.currentProgramId);
+                if (Array.isArray(d.deletedProgramIds))
+                    setDeletedProgramIds(d.deletedProgramIds);
             }
         }
         catch (e) { }
@@ -559,16 +587,25 @@ function App() {
                     return merged;
                 });
                 // Programs: union by id, so a program added on any device eventually
-                // shows up everywhere and is never dropped. currentProgramId is
-                // intentionally left as whatever this device last had — a background
-                // sync shouldn't yank you to a different program mid-use.
+                // shows up everywhere and is never dropped — EXCEPT ids that either
+                // side has tombstoned via deletedProgramIds, which are merged the
+                // same way (union, monotonically growing) and always win. Without
+                // this, a device that never performed the delete would just keep
+                // re-adding the "missing" program back via the union merge, and
+                // then push that resurrection back up — which was the bug.
+                // currentProgramId is intentionally left as whatever this device
+                // last had — a background sync shouldn't yank you to a different
+                // program mid-use.
                 if (!programsDirtyRef.current && Array.isArray(remote.programs)) {
-                    setPrograms((cur) => {
-                        const merged = Array.isArray(remote.programs) ? remote.programs.slice() : [];
-                        (cur || []).forEach((lp) => { if (!merged.find((rp) => rp.id === lp.id))
-                            merged.push(lp); });
-                        return merged;
-                    });
+                    const localDeleted = stateRef.current.deletedProgramIds || [];
+                    const remoteDeleted = Array.isArray(remote.deletedProgramIds) ? remote.deletedProgramIds : [];
+                    const mergedDeleted = Array.from(new Set([...localDeleted, ...remoteDeleted]));
+                    const localPrograms = stateRef.current.programs || [];
+                    const mergedPrograms = remote.programs.slice();
+                    localPrograms.forEach((lp) => { if (!mergedPrograms.find((rp) => rp.id === lp.id))
+                        mergedPrograms.push(lp); });
+                    setPrograms(mergedPrograms.filter((p) => !mergedDeleted.includes(p.id)));
+                    setDeletedProgramIds(mergedDeleted);
                 }
                 setTimeout(() => { persistLocal(); pullingRef.current = false; pushRemote(); }, 0);
             }
@@ -642,9 +679,60 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, programs, currentProgramId, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, deletedProgramIds, persistLocal, schedulePush]);
     const C = colors(ACCENT);
     const activeProgram = getActiveProgram(currentProgramId, programs);
+    // ---- STOPWATCH effects + handlers (start) ----
+    // Load this date's saved stopwatch state whenever the focused day changes.
+    useEffect(() => {
+        if (!focusedDate)
+            return;
+        try {
+            const raw = localStorage.getItem(`sw|${activeProgram.id}|${focusedDate}`);
+            if (raw) {
+                const d = JSON.parse(raw);
+                setSwRunning(!!d.running);
+                setSwStartedAt(d.startedAt || null);
+                setSwAccumulatedMs(d.accumulatedMs || 0);
+                return;
+            }
+        }
+        catch (e) { }
+        setSwRunning(false);
+        setSwStartedAt(null);
+        setSwAccumulatedMs(0);
+    }, [focusedDate, activeProgram.id]);
+    // Persist stopwatch state for the currently focused date whenever it changes.
+    useEffect(() => {
+        if (!focusedDate)
+            return;
+        try {
+            localStorage.setItem(`sw|${activeProgram.id}|${focusedDate}`, JSON.stringify({ running: swRunning, startedAt: swStartedAt, accumulatedMs: swAccumulatedMs }));
+        }
+        catch (e) { }
+    }, [swRunning, swStartedAt, swAccumulatedMs]);
+    // Visible ticking while running + immediate refresh on returning from background.
+    useEffect(() => {
+        if (!swRunning)
+            return;
+        const id = setInterval(() => setSwTick((t) => t + 1), 1000);
+        return () => clearInterval(id);
+    }, [swRunning]);
+    useEffect(() => {
+        const onVis = () => { if (document.visibilityState === "visible")
+            setSwTick((t) => t + 1); };
+        document.addEventListener("visibilitychange", onVis);
+        return () => document.removeEventListener("visibilitychange", onVis);
+    }, []);
+    const swElapsedMs = swAccumulatedMs + (swRunning && swStartedAt ? Date.now() - swStartedAt : 0);
+    const swStart = () => { setSwStartedAt(Date.now()); setSwRunning(true); };
+    const swStop = () => {
+        setSwAccumulatedMs((acc) => acc + (swStartedAt ? Date.now() - swStartedAt : 0));
+        setSwRunning(false);
+        setSwStartedAt(null);
+    };
+    const swReset = () => { setSwRunning(false); setSwStartedAt(null); setSwAccumulatedMs(0); };
+    // ---- STOPWATCH effects + handlers (end) ----
     // ---- Previous/Next Workout (focused view navigation) ----
     const goPrevWorkout = () => {
         if (!focusedDate)
@@ -945,6 +1033,7 @@ function App() {
         if (!ok)
             return;
         setPrograms((cur) => cur.filter((p) => p.id !== program.id));
+        setDeletedProgramIds((cur) => cur.includes(program.id) ? cur : [...cur, program.id]);
         programsDirtyRef.current = true;
         if (currentProgramId === program.id) {
             setCurrentProgramId(BUILTIN_ID);
@@ -1017,7 +1106,7 @@ function App() {
         setSyncOk(true);
     };
     // ---- Backup / restore ----
-    const backupString = () => JSON.stringify({ app: "workoutlog", v: 3, savedAt: new Date().toISOString(), entries, programs, currentProgramId });
+    const backupString = () => JSON.stringify({ app: "workoutlog", v: 3, savedAt: new Date().toISOString(), entries, programs, currentProgramId, deletedProgramIds });
     const doDownload = () => {
         try {
             const blob = new Blob([backupString()], { type: "application/json" });
@@ -1099,6 +1188,9 @@ function App() {
             setPrograms(d.programs);
         if (d.currentProgramId !== undefined)
             setCurrentProgramId(d.currentProgramId);
+        if (Array.isArray(d.deletedProgramIds))
+            setDeletedProgramIds(d.deletedProgramIds);
+        programsDirtyRef.current = true;
         migratedRef.current = false;
         setFocusedDate(null);
         setStatus(`Restored ${n} saved value${n === 1 ? "" : "s"}. ✓`);
@@ -1197,7 +1289,13 @@ function App() {
                 React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, padding: "14px 16px 24px" } },
                     React.createElement("button", { onClick: () => addFinisher("Abs"), style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Abs"),
                     React.createElement("button", { onClick: () => addFinisher("Calves"), style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Calves"),
-                    React.createElement("button", { onClick: addCustomFinisher, style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Custom\u2026"))));
+                    React.createElement("button", { onClick: addCustomFinisher, style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Custom\u2026")),
+                React.createElement("div", { style: { margin: "0 16px 28px", padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#FAF8F5" } },
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 10, textAlign: "center" } }, "STOPWATCH"),
+                    React.createElement("div", { style: { fontSize: 38, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center", marginBottom: 14 } }, formatStopwatch(swElapsedMs)),
+                    React.createElement("div", { style: { display: "flex", gap: 8 } },
+                        !swRunning ? (React.createElement("button", { onClick: swStart, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Start")) : (React.createElement("button", { onClick: swStop, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: "#5E574C", color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Stop")),
+                        React.createElement("button", { onClick: swReset, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Reset")))));
         }
     }
     // ---- Calendar view content ----
