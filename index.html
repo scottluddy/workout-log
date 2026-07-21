@@ -97,6 +97,69 @@ const SPLITS = [
     },
 ];
 const HEAD = 42, EX = 64;
+// ============================================================
+// BODY COMPOSITION MODULE (start) — safe to delete entirely: remove this
+// block, the state/handlers/effects marked "BODY COMPOSITION" in App(),
+// the card on the calendar page, and flip BODY_COMP_ENABLED to false.
+// Unlike other modules, this one syncs through its own two Supabase
+// tables (body_comp_entries, body_comp_blocks) rather than the shared
+// entries blob — see PROJECT_CONTEXT.md for the SQL to create them.
+const BODY_COMP_ENABLED = true;
+const BC_ROW_H = 66;
+const BC_START_DATE_KEY = "2026-04-06"; // fixed first Monday row, per spec
+const BC_BLOCK_COLORS = {
+    bulk: { bg: "#E3F5E7", border: "#2FAE66", chip: "#D8F0DE" },
+    maintenance: { bg: "#FFF6D8", border: "#D8B84A", chip: "#FBEFC4" },
+    cut: { bg: "#FDE7E5", border: "#D9645C", chip: "#F9D4D1" },
+};
+function bcMondaysInRange(startKey, endDate) {
+    const rows = [];
+    let d = keyToDate(startKey);
+    while (d <= endDate) {
+        rows.push(new Date(d));
+        d = addDays(d, 7);
+    }
+    return rows;
+}
+function bcBlockForDate(blocks, dk) {
+    return (blocks || []).find((b) => dk >= b.startDate && dk <= b.endDate) || null;
+}
+function bcTargetWeight(block, d) {
+    if (!block)
+        return null;
+    const startingWeight = parseFloat(block.startingWeight);
+    if (isNaN(startingWeight))
+        return null;
+    if (block.type === "maintenance")
+        return startingWeight;
+    const start = keyToDate(block.startDate);
+    const weeksSince = Math.round((d - start) / (7 * 24 * 3600 * 1000));
+    const rate = parseFloat(block.weeklyRate) || 0;
+    const signedRate = block.type === "cut" ? -Math.abs(rate) : Math.abs(rate);
+    return startingWeight + weeksSince * signedRate;
+}
+function bcRangesOverlap(aStart, aEnd, bStart, bEnd) {
+    return aStart <= bEnd && bStart <= aEnd;
+}
+function bcFormatWeight(n) {
+    if (n === null || n === undefined || isNaN(n))
+        return "—";
+    return (Math.round(n * 10) / 10).toString();
+}
+function bcSanitizeDecimal(val) {
+    let v = val.replace(/[^0-9.\-]/g, "");
+    const neg = v.startsWith("-");
+    v = v.replace(/-/g, "");
+    if (neg)
+        v = "-" + v;
+    const parts = v.split(".");
+    if (parts.length > 2)
+        v = parts[0] + "." + parts.slice(1).join("");
+    return v;
+}
+// ============================================================
+// BODY COMPOSITION MODULE (end)
+// ============================================================
 const DOW_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 function colors(accent) {
     return {
@@ -437,6 +500,13 @@ function App() {
     const [swAccumulatedMs, setSwAccumulatedMs] = useState(0); // ms banked from previous run segments
     const [swTick, setSwTick] = useState(0); // dummy value bumped to force a re-render while running
     // ---- STOPWATCH state (end) ----
+    // ---- BODY COMPOSITION state (start) ----
+    const [bcEntries, setBcEntries] = useState({}); // dateKey -> {actualWeight,bf,waist,belly}
+    const [bcBlocks, setBcBlocks] = useState([]); // [{id,type,startDate,endDate,startingWeight,weeklyRate}]
+    const [bcView, setBcView] = useState(null); // null | "table" | "blocks"
+    const [bcBlockForm, setBcBlockForm] = useState({ type: "bulk", startDate: "", endDate: "", startingWeight: "", weeklyRate: "" });
+    const [bcBlockError, setBcBlockError] = useState("");
+    // ---- BODY COMPOSITION state (end) ----
     const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
@@ -475,6 +545,16 @@ function App() {
     const stateRef = useRef({ entries, programs, currentProgramId });
     stateRef.current = { entries, programs, currentProgramId, deletedProgramIds };
     const migratedRef = useRef(false);
+    // ---- BODY COMPOSITION refs (start) ----
+    const bcStateRef = useRef({ entries: {}, blocks: [] });
+    bcStateRef.current = { entries: bcEntries, blocks: bcBlocks };
+    const bcDirtyEntriesRef = useRef(new Set()); // date keys with unsynced local edits
+    const bcBlocksDirtyRef = useRef(false); // true while a local block add/remove hasn't been confirmed pushed
+    const bcPendingDeleteIdsRef = useRef(new Set()); // block ids removed locally, pending a soft-delete push
+    const bcPushTimerRef = useRef(null);
+    const bcSkipFirstSaveRef = useRef(true);
+    const bcTableScrollRef = useRef(null);
+    // ---- BODY COMPOSITION refs (end) ----
     // Load local data, then run the one-time (additive, idempotent) migration
     useEffect(() => {
         try {
@@ -493,6 +573,35 @@ function App() {
         }
         catch (e) { }
     }, []);
+    // ---- BODY COMPOSITION local load/save (start) ----
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem("bc_v1");
+            if (raw) {
+                const d = JSON.parse(raw);
+                if (d.entries)
+                    setBcEntries(d.entries);
+                if (Array.isArray(d.blocks))
+                    setBcBlocks(d.blocks);
+            }
+        }
+        catch (e) { }
+    }, []);
+    useEffect(() => {
+        if (bcSkipFirstSaveRef.current) {
+            bcSkipFirstSaveRef.current = false;
+            return;
+        }
+        try {
+            localStorage.setItem("bc_v1", JSON.stringify({ entries: bcEntries, blocks: bcBlocks }));
+        }
+        catch (e) { }
+        if (uidRef.current) {
+            clearTimeout(bcPushTimerRef.current);
+            bcPushTimerRef.current = setTimeout(() => { bcPushEntries(); bcPushBlocks(); }, 1200);
+        }
+    }, [bcEntries, bcBlocks]);
+    // ---- BODY COMPOSITION local load/save (end) ----
     useEffect(() => {
         const t = setTimeout(() => {
             if (migratedRef.current)
@@ -528,6 +637,70 @@ function App() {
         }
         catch (e) { }
     }, []);
+    // ---- BODY COMPOSITION sync (start) ----
+    const bcPushEntries = useCallback(async () => {
+        const supa = supaRef.current, uid = uidRef.current;
+        if (!supa || !uid)
+            return;
+        const dirty = Array.from(bcDirtyEntriesRef.current);
+        if (!dirty.length)
+            return;
+        const rows = dirty.map((dk) => {
+            const e = bcStateRef.current.entries[dk] || {};
+            return { user_id: uid, date: dk, actual_weight: e.actualWeight || null, bf: e.bf || null, waist: e.waist || null, belly: e.belly || null, updated_at: new Date().toISOString() };
+        });
+        try {
+            const { error } = await supa.from("body_comp_entries").upsert(rows, { onConflict: "user_id,date" });
+            if (!error)
+                dirty.forEach((dk) => bcDirtyEntriesRef.current.delete(dk));
+        }
+        catch (e) { }
+    }, []);
+    const bcPushBlocks = useCallback(async () => {
+        const supa = supaRef.current, uid = uidRef.current;
+        if (!supa || !uid)
+            return;
+        const blocks = bcStateRef.current.blocks;
+        const rows = blocks.map((b) => ({ id: b.id, user_id: uid, type: b.type, start_date: b.startDate, end_date: b.endDate, starting_weight: b.startingWeight || null, weekly_rate: b.weeklyRate || null, deleted: false, updated_at: new Date().toISOString() }));
+        const deleteIds = Array.from(bcPendingDeleteIdsRef.current);
+        try {
+            if (rows.length)
+                await supa.from("body_comp_blocks").upsert(rows, { onConflict: "id" });
+            for (const id of deleteIds) {
+                await supa.from("body_comp_blocks").update({ deleted: true, updated_at: new Date().toISOString() }).eq("id", id).eq("user_id", uid);
+                bcPendingDeleteIdsRef.current.delete(id);
+            }
+            bcBlocksDirtyRef.current = false;
+        }
+        catch (e) { }
+    }, []);
+    const bcPullAll = useCallback(async () => {
+        const supa = supaRef.current, uid = uidRef.current;
+        if (!supa || !uid)
+            return;
+        try {
+            const [entriesRes, blocksRes] = await Promise.all([
+                supa.from("body_comp_entries").select("*").eq("user_id", uid),
+                supa.from("body_comp_blocks").select("*").eq("user_id", uid).eq("deleted", false),
+            ]);
+            if (!entriesRes.error && entriesRes.data) {
+                setBcEntries((cur) => {
+                    const merged = {};
+                    entriesRes.data.forEach((row) => {
+                        merged[row.date] = { actualWeight: row.actual_weight || "", bf: row.bf || "", waist: row.waist || "", belly: row.belly || "" };
+                    });
+                    Object.keys(cur).forEach((dk) => { if (bcDirtyEntriesRef.current.has(dk))
+                        merged[dk] = cur[dk]; });
+                    return merged;
+                });
+            }
+            if (!blocksRes.error && blocksRes.data && !bcBlocksDirtyRef.current) {
+                setBcBlocks(blocksRes.data.map((row) => ({ id: row.id, type: row.type, startDate: row.start_date, endDate: row.end_date, startingWeight: row.starting_weight || "", weeklyRate: row.weekly_rate || "" })));
+            }
+        }
+        catch (e) { }
+    }, []);
+    // ---- BODY COMPOSITION sync (end) ----
     const pushRemote = useCallback(async () => {
         const supa = supaRef.current, uid = uidRef.current;
         if (!supa || !uid)
@@ -627,6 +800,7 @@ function App() {
                 uidRef.current = s.user.id;
                 setUser({ email: s.user.email });
                 pullMerge();
+                bcPullAll();
             }
         });
         supa.auth.onAuthStateChange((_e, session) => {
@@ -639,7 +813,7 @@ function App() {
                 setUser(null);
             }
         });
-    }, [pullMerge]);
+    }, [pullMerge, bcPullAll]);
     // Init Supabase + visibility listener
     useEffect(() => {
         const tryInit = () => {
@@ -659,12 +833,16 @@ function App() {
             }
         };
         tryInit();
-        const onVis = () => { if (document.visibilityState === "visible" && uidRef.current)
-            pullMerge(true); };
+        const onVis = () => { if (document.visibilityState === "visible" && uidRef.current) {
+            pullMerge(true);
+            bcPullAll();
+        } };
         document.addEventListener("visibilitychange", onVis);
         const pollId = setInterval(() => {
-            if (uidRef.current && !pullingRef.current)
+            if (uidRef.current && !pullingRef.current) {
                 pullMerge(true);
+                bcPullAll();
+            }
         }, 15000);
         return () => {
             document.removeEventListener("visibilitychange", onVis);
@@ -724,6 +902,22 @@ function App() {
         document.addEventListener("visibilitychange", onVis);
         return () => document.removeEventListener("visibilitychange", onVis);
     }, []);
+    // ---- BODY COMPOSITION: open pre-scrolled ~4 weeks before today ----
+    useEffect(() => {
+        if (bcView !== "table")
+            return;
+        requestAnimationFrame(() => {
+            const el = bcTableScrollRef.current;
+            if (!el)
+                return;
+            const targetDate = addDays(new Date(), -28);
+            const rows = bcMondaysInRange(BC_START_DATE_KEY, addDays(new Date(), 365));
+            let idx = rows.findIndex((d) => d >= targetDate);
+            if (idx < 0)
+                idx = 0;
+            el.scrollTop = Math.max(0, idx * BC_ROW_H - 40);
+        });
+    }, [bcView]);
     const swElapsedMs = swAccumulatedMs + (swRunning && swStartedAt ? Date.now() - swStartedAt : 0);
     const swStart = () => { setSwStartedAt(Date.now()); setSwRunning(true); };
     const swStop = () => {
@@ -826,6 +1020,48 @@ function App() {
             addFinisher(name.trim());
     };
     // ---- FINISHER EXERCISES (end) ----
+    // ---- BODY COMPOSITION handlers (start) ----
+    const bcSetEntryField = (dk, field, rawVal) => {
+        const val = bcSanitizeDecimal(rawVal);
+        bcDirtyEntriesRef.current.add(dk);
+        setBcEntries((cur) => {
+            const next = Object.assign({}, cur);
+            next[dk] = Object.assign({}, next[dk], { [field]: val });
+            return next;
+        });
+    };
+    const bcAddBlock = () => {
+        const { type, startDate, endDate, startingWeight, weeklyRate } = bcBlockForm;
+        if (!startDate || !endDate) {
+            setBcBlockError("Pick a start and end date.");
+            return;
+        }
+        if (endDate < startDate) {
+            setBcBlockError("End date must be after the start date.");
+            return;
+        }
+        if (!startingWeight.trim()) {
+            setBcBlockError("Enter a starting weight.");
+            return;
+        }
+        const overlap = bcBlocks.some((b) => bcRangesOverlap(startDate, endDate, b.startDate, b.endDate));
+        if (overlap) {
+            setBcBlockError("That range overlaps an existing block.");
+            return;
+        }
+        const id = "blk_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+        const block = { id, type, startDate, endDate, startingWeight: startingWeight.trim(), weeklyRate: type === "maintenance" ? "" : (weeklyRate.trim() || "0") };
+        setBcBlocks((cur) => [...cur, block]);
+        bcBlocksDirtyRef.current = true;
+        setBcBlockError("");
+        setBcBlockForm({ type: "bulk", startDate: "", endDate: "", startingWeight: "", weeklyRate: "" });
+    };
+    const bcRemoveBlock = (id) => {
+        setBcBlocks((cur) => cur.filter((b) => b.id !== id));
+        bcPendingDeleteIdsRef.current.add(id);
+        bcBlocksDirtyRef.current = true;
+    };
+    // ---- BODY COMPOSITION handlers (end) ----
     // ---- My Programs ----
     const selectProgram = (id) => {
         currentProgramId !== id && (programsDirtyRef.current = true);
@@ -1066,6 +1302,7 @@ function App() {
         setUser({ email: data.user.email });
         setAuthPass("");
         await pullMerge();
+        bcPullAll();
     };
     const signUp = async () => {
         const supa = supaRef.current;
@@ -1090,6 +1327,7 @@ function App() {
             setUser({ email: data.user.email });
             setAuthPass("");
             await pullMerge();
+            bcPullAll();
         }
         else {
             setSyncStatus("Account created — check your email to confirm, then sign in.");
@@ -1325,12 +1563,12 @@ function App() {
                         React.createElement("button", { onClick: goPrevWorkout, disabled: activeProgram.kind === "custom" && !entries[`dt|${activeProgram.id}|${focusedDate}`], style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "\u2039 Previous Workout"),
                         React.createElement("button", { onClick: goHome, style: { border: "none", cursor: "pointer", background: C.a, color: "#fff", borderRadius: 10, padding: "9px 18px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1 } }, "Home"),
                         React.createElement("button", { onClick: goNextWorkout, disabled: !hasNextWorkoutBtn, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "Next Workout \u203A")))) : (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 } },
-                    React.createElement("button", { onClick: () => setViewMonth((m) => addDays(startOfMonth(m), -1)), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u2039"),
+                    React.createElement("button", { onClick: () => setViewMonth((m) => addDays(startOfMonth(m), -1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: "#26221D" } },
                         MONTH_NAMES[viewMonth.getMonth()],
                         " ",
                         viewMonth.getFullYear()),
-                    React.createElement("button", { onClick: () => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1)), style: { width: 32, height: 32, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 9, fontSize: 17, lineHeight: 1, color: "#5E574C", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u203A"))),
+                    React.createElement("button", { onClick: () => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Next"))),
                 !focusedDate && !sameMonth(viewMonth, today) && (React.createElement("button", { onClick: () => setViewMonth(startOfMonth(today)), style: { marginTop: 10, width: "100%", padding: "8px 0", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } }, "Today"))),
             focusedDate ? (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 166px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)" } }, needsDayTypePick ? (React.createElement("div", { style: { padding: 20 } },
                 React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.muted, marginBottom: 12, textAlign: "center" } }, "Select a day type for this date"),
@@ -1378,7 +1616,27 @@ function App() {
                         React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Today")),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                         React.createElement("div", { style: { width: 12, height: 12, borderRadius: "50%", background: REP_COLOR_BG.green, border: "2px solid #2FAE66" } }),
-                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Logged workout"))))),
+                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Logged workout"))),
+                BODY_COMP_ENABLED && (React.createElement("div", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 16, padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#fff", cursor: "pointer" } },
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 6 } }, "BODY COMPOSITION"),
+                    (() => {
+                        const dates = Object.keys(bcEntries).filter((dk) => bcEntries[dk] && (bcEntries[dk].actualWeight || bcEntries[dk].bf)).sort();
+                        const latest = dates[dates.length - 1];
+                        if (!latest) {
+                            return React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.ink } }, "No entries yet \u00B7 tap to start");
+                        }
+                        const le = bcEntries[latest];
+                        const ld = keyToDate(latest);
+                        return (React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: C.ink } },
+                                MONTH_NAMES[ld.getMonth()].slice(0, 3),
+                                " ",
+                                ld.getDate(),
+                                " \u2014 ",
+                                le.actualWeight || "—",
+                                le.bf ? `, ${le.bf}% BF` : ""),
+                            React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 3 } }, "Weekly weigh-ins \u00B7 tap to open")));
+                    })())))),
             menuOpen && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
@@ -1415,7 +1673,7 @@ function App() {
                                 React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".05em", color: "#A79F93" } }, "SIGNED IN"),
                                 React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#26221D", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, user.email)),
                             React.createElement("div", { style: { display: "flex", gap: 7, flexShrink: 0 } },
-                                React.createElement("button", { onClick: () => pullMerge(), style: { padding: "8px 12px", border: "1px solid #E7E1D7", borderRadius: 9, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sync now"),
+                                React.createElement("button", { onClick: () => { pullMerge(); bcPullAll(); }, style: { padding: "8px 12px", border: "1px solid #E7E1D7", borderRadius: 9, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sync now"),
                                 React.createElement("button", { onClick: signOut, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: "#F1EDE6", color: "#5E574C", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sign out"))))) : (React.createElement("div", { style: { marginBottom: 18 } },
                         React.createElement("input", { type: "email", autoComplete: "email", value: authEmail, onChange: (e) => setAuthEmail(e.target.value), placeholder: "Email", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 8 } }),
                         React.createElement("input", { type: "password", autoComplete: "current-password", value: authPass, onChange: (e) => setAuthPass(e.target.value), placeholder: "Password", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 10 } }),
@@ -1492,7 +1750,90 @@ function App() {
                         React.createElement("div", { style: { minHeight: builderError ? 18 : 0, marginBottom: builderError ? 10 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#C0392B" } }, builderError),
                         React.createElement("div", { style: { display: "flex", gap: 8 } },
                             React.createElement("button", { onClick: () => builderEditingId ? closeBuilder() : setBuilderStep(1), style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, builderEditingId ? "Cancel" : "Back"),
-                            React.createElement("button", { onClick: saveBuilderProgram, style: { flex: 2, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Save Program"))))))))));
+                            React.createElement("button", { onClick: saveBuilderProgram, style: { flex: 2, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Save Program"))))))),
+            BODY_COMP_ENABLED && bcView === "table" && (() => {
+                const todayD = new Date();
+                const bcRows = bcMondaysInRange(BC_START_DATE_KEY, addDays(todayD, 365));
+                return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 30, background: "#fff", display: "flex", flexDirection: "column" } },
+                    React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                        React.createElement("button", { onClick: () => setBcView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Body Composition"),
+                        React.createElement("button", { onClick: () => setBcView("blocks"), style: { border: "none", background: C.a, borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#fff", cursor: "pointer" } }, "Blocks")),
+                    React.createElement("div", { ref: bcTableScrollRef, className: "wl-scroll", style: { flex: 1, overflow: "auto" } },
+                        React.createElement("div", { style: { display: "flex", position: "sticky", top: 0, zIndex: 2, background: "#F3EFE9", borderBottom: "1px solid #ECE7DE", padding: "10px 6px" } },
+                            React.createElement("div", { style: { flex: 1.3, fontSize: 10.5, fontWeight: 800, letterSpacing: ".03em", color: C.muted, textAlign: "left" } }, "DATE"),
+                            React.createElement("div", { style: { flex: 1, fontSize: 10.5, fontWeight: 800, letterSpacing: ".03em", color: C.muted, textAlign: "center" } }, "TAR WT"),
+                            React.createElement("div", { style: { flex: 1, fontSize: 10.5, fontWeight: 800, letterSpacing: ".03em", color: C.muted, textAlign: "center" } }, "ACT WT"),
+                            React.createElement("div", { style: { flex: 0.75, fontSize: 10.5, fontWeight: 800, letterSpacing: ".03em", color: C.muted, textAlign: "center" } }, "BF"),
+                            React.createElement("div", { style: { flex: 0.85, fontSize: 10.5, fontWeight: 800, letterSpacing: ".03em", color: C.muted, textAlign: "center" } }, "WAIST"),
+                            React.createElement("div", { style: { flex: 0.85, fontSize: 10.5, fontWeight: 800, letterSpacing: ".03em", color: C.muted, textAlign: "center" } }, "BELLY")),
+                        bcRows.map((d) => {
+                            const dk = dateKey(d);
+                            const block = bcBlockForDate(bcBlocks, dk);
+                            const bColors = block ? BC_BLOCK_COLORS[block.type] : null;
+                            const isToday = sameDate(d, todayD);
+                            const tw = bcTargetWeight(block, d);
+                            const e = bcEntries[dk] || {};
+                            const cellInputStyle = { width: "100%", textAlign: "center", fontSize: 16, fontWeight: 800, border: "none", background: "transparent", fontFamily: "inherit", color: C.ink, padding: 0 };
+                            return (React.createElement("div", { key: dk, style: { display: "flex", alignItems: "center", padding: "6px", borderBottom: "1px solid #ECE7DE", background: bColors ? bColors.bg : "#fff", borderLeft: isToday ? `4px solid ${C.a}` : "4px solid transparent", minHeight: BC_ROW_H, boxSizing: "border-box" } },
+                                React.createElement("div", { style: { flex: 1.3 } },
+                                    React.createElement("div", { style: { fontSize: 17, fontWeight: 800, color: C.ink } },
+                                        MONTH_NAMES[d.getMonth()].slice(0, 3),
+                                        " ",
+                                        d.getDate()),
+                                    React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.muted } }, d.getFullYear())),
+                                React.createElement("div", { style: { flex: 1, textAlign: "center", fontSize: 16, fontWeight: 800, color: C.ink } }, bcFormatWeight(tw)),
+                                React.createElement("div", { style: { flex: 1 } },
+                                    React.createElement("input", { className: "wl-input", value: e.actualWeight || "", onChange: (ev) => bcSetEntryField(dk, "actualWeight", ev.target.value), inputMode: "decimal", style: cellInputStyle })),
+                                React.createElement("div", { style: { flex: 0.75 } },
+                                    React.createElement("input", { className: "wl-input", value: e.bf || "", onChange: (ev) => bcSetEntryField(dk, "bf", ev.target.value), inputMode: "decimal", style: cellInputStyle })),
+                                React.createElement("div", { style: { flex: 0.85 } },
+                                    React.createElement("input", { className: "wl-input", value: e.waist || "", onChange: (ev) => bcSetEntryField(dk, "waist", ev.target.value), inputMode: "decimal", style: cellInputStyle })),
+                                React.createElement("div", { style: { flex: 0.85 } },
+                                    React.createElement("input", { className: "wl-input", value: e.belly || "", onChange: (ev) => bcSetEntryField(dk, "belly", ev.target.value), inputMode: "decimal", style: cellInputStyle }))));
+                        }))));
+            })(),
+            BODY_COMP_ENABLED && bcView === "blocks" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 31, background: "#fff", display: "flex", flexDirection: "column" } },
+                React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                    React.createElement("button", { onClick: () => setBcView("table"), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Blocks"),
+                    React.createElement("div", { style: { width: 66 } })),
+                React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
+                    bcBlocks.length === 0 && React.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 16 } }, "No blocks yet."),
+                    bcBlocks.slice().sort((a, b) => a.startDate.localeCompare(b.startDate)).map((b) => {
+                        const bc = BC_BLOCK_COLORS[b.type];
+                        const rateDisplay = b.type === "maintenance" ? "flat" : `${b.type === "cut" ? "-" : "+"}${b.weeklyRate || 0}/wk`;
+                        return (React.createElement("div", { key: b.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", background: bc.chip, border: `1.5px solid ${bc.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 10 } },
+                            React.createElement("div", null,
+                                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 800, color: C.ink, textTransform: "capitalize" } }, b.type),
+                                React.createElement("div", { style: { fontSize: 12, color: "#5E574C", marginTop: 2 } },
+                                    b.startDate,
+                                    " \u2013 ",
+                                    b.endDate),
+                                React.createElement("div", { style: { fontSize: 12, color: "#5E574C", marginTop: 1 } },
+                                    b.startingWeight,
+                                    " lb, ",
+                                    rateDisplay)),
+                            React.createElement("button", { onClick: () => bcRemoveBlock(b.id), style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 16, cursor: "pointer", padding: 6 } }, "\u2715")));
+                    }),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, margin: "18px 0 8px" } }, "ADD A BLOCK"),
+                    React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 12 } }, ["bulk", "maintenance", "cut"].map((t) => (React.createElement("button", { key: t, onClick: () => setBcBlockForm((f) => ({ ...f, type: t })), style: { flex: 1, padding: "9px 0", borderRadius: 9, border: bcBlockForm.type === t ? "none" : "1px solid #E7E1D7", background: bcBlockForm.type === t ? BC_BLOCK_COLORS[t].border : "#fff", color: bcBlockForm.type === t ? "#fff" : "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer", textTransform: "capitalize" } }, t)))),
+                    React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
+                        React.createElement("div", { style: { flex: 1 } },
+                            React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 4 } }, "START DATE"),
+                            React.createElement("input", { type: "date", value: bcBlockForm.startDate, onChange: (e) => setBcBlockForm((f) => ({ ...f, startDate: e.target.value })), style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13 } })),
+                        React.createElement("div", { style: { flex: 1 } },
+                            React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 4 } }, "END DATE"),
+                            React.createElement("input", { type: "date", value: bcBlockForm.endDate, onChange: (e) => setBcBlockForm((f) => ({ ...f, endDate: e.target.value })), style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13 } }))),
+                    React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+                        React.createElement("div", { style: { flex: 1 } },
+                            React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 4 } }, "STARTING WEIGHT (LBS)"),
+                            React.createElement("input", { className: "wl-ph-gray", value: bcBlockForm.startingWeight, onChange: (e) => setBcBlockForm((f) => ({ ...f, startingWeight: bcSanitizeDecimal(e.target.value) })), placeholder: "ex. 180", inputMode: "decimal", style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13, fontWeight: 700 } })),
+                        React.createElement("div", { style: { flex: 1 } },
+                            React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 4 } }, "WEEKLY RATE (LBS/WK)"),
+                            React.createElement("input", { className: "wl-ph-gray", disabled: bcBlockForm.type === "maintenance", value: bcBlockForm.weeklyRate, onChange: (e) => setBcBlockForm((f) => ({ ...f, weeklyRate: bcSanitizeDecimal(e.target.value) })), placeholder: "ex. 0.5", inputMode: "decimal", style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13, fontWeight: 700, opacity: bcBlockForm.type === "maintenance" ? 0.4 : 1, background: bcBlockForm.type === "maintenance" ? "#F5F2EC" : "#fff" } }))),
+                    React.createElement("div", { style: { minHeight: bcBlockError ? 18 : 0, marginBottom: bcBlockError ? 10 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#C0392B" } }, bcBlockError),
+                    React.createElement("button", { onClick: bcAddBlock, style: { width: "100%", padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Add Block")))))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
 
