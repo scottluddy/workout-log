@@ -536,7 +536,7 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
         byExercise[name].push({ date: dk, weight, reps });
     });
     const lines = [];
-    lines.push("This is my workout log data, exported from my personal training app. Please analyze trends across it — progress, plateaus, consistency, anything worth flagging — and give me constructive feedback.");
+    lines.push("This is my workout log data, exported from my personal training app. Please analyze trends across it — progress, plateaus, consistency, anything worth flagging. Be direct and genuinely honest, not just encouraging — if something looks like it's stalled, regressing, or inconsistent, say so plainly rather than softening it. One important caveat: I sometimes change equipment or something about how an exercise is performed, which can cause a large jump or drop in logged weight that has nothing to do with actual strength change — treat unusually large jumps between sessions as a likely sign that something about the exercise changed, not as a real performance swing, unless the surrounding data suggests otherwise.");
     lines.push("");
     lines.push("WORKOUT LOG — ANALYSIS EXPORT");
     lines.push(`Generated: ${dateKey(new Date())}`);
@@ -1977,7 +1977,7 @@ function App() {
                         activeProgram.name,
                         ", formatted for pasting into a Claude chat (this one or a new one) to get AI analysis of your trends \u2014 progress, plateaus, consistency, and so on."),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
-                        React.createElement("button", { onClick: axDoCopy, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Copy to Clipboard"),
+                        React.createElement("button", { onClick: axDoCopy, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Analyze with AI"),
                         React.createElement("button", { onClick: axDoDownload, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Download .txt")),
                     React.createElement("div", { style: { minHeight: axCopyStatus ? 18 : 0, marginBottom: axCopyStatus ? 12 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#1F8A5B" } }, axCopyStatus),
                     React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "PREVIEW"),
