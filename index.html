@@ -482,6 +482,95 @@ function findAdjacentSameDayType(entries, programId, fromKey, dtId, dir, maxDays
     }
     return null;
 }
+// ============================================================
+// ANALYSIS EXPORT MODULE (start) — safe to delete entirely: remove this
+// block, the state/handler/effect marked "ANALYSIS EXPORT" in App(), and
+// the card + overlay in the render tree, and flip ANALYSIS_EXPORT_ENABLED
+// to false. Purely a read-only formatter over data that already exists —
+// no new storage, no sync, no network calls of its own.
+const ANALYSIS_EXPORT_ENABLED = true;
+function axResolveExerciseName(ridToName, entries, pid, dk, rid) {
+    if (ridToName[rid])
+        return ridToName[rid];
+    if (String(rid).indexOf("f") === 0) {
+        const list = getFinishers(entries, pid, dk);
+        const f = list.find((x) => x.id === rid);
+        if (f)
+            return f.name + " (finisher)";
+    }
+    return `Exercise ${rid}`;
+}
+function buildAnalysisExport(activeProgram, entries, bcEntries) {
+    const pid = activeProgram.id;
+    const ridToName = {};
+    if (activeProgram.kind === "weekly") {
+        activeProgram.days.forEach((d) => d.exercises.forEach((ex) => { ridToName[ex.rid] = ex.name; }));
+    }
+    else {
+        (activeProgram.dayTypes || []).forEach((dt) => dt.exercises.forEach((ex) => { ridToName[ex.rid] = ex.name; }));
+    }
+    const byExercise = {}; // resolved name -> [{date, weight, reps:[...]}]
+    const wPrefix = `wd|${pid}|`;
+    Object.keys(entries).forEach((k) => {
+        if (k.indexOf(wPrefix) !== 0)
+            return;
+        const rest = k.slice(wPrefix.length);
+        const parts = rest.split("|");
+        if (parts.length !== 2)
+            return;
+        const dk = parts[0], rid = parts[1];
+        const weight = entries[k];
+        if (!weight)
+            return;
+        const reps = [];
+        for (let si = 0; si < 5; si++) {
+            const rv = entries[`rd|${pid}|${dk}|${rid}|${si}`];
+            if (rv)
+                reps.push(rv);
+        }
+        if (!reps.length)
+            return;
+        const name = axResolveExerciseName(ridToName, entries, pid, dk, rid);
+        if (!byExercise[name])
+            byExercise[name] = [];
+        byExercise[name].push({ date: dk, weight, reps });
+    });
+    const lines = [];
+    lines.push("This is my workout log data, exported from my personal training app. Please analyze trends across it — progress, plateaus, consistency, anything worth flagging — and give me constructive feedback.");
+    lines.push("");
+    lines.push("WORKOUT LOG — ANALYSIS EXPORT");
+    lines.push(`Generated: ${dateKey(new Date())}`);
+    lines.push(`Program: ${activeProgram.name} (${activeProgram.kind === "weekly" ? "Weekly" : "Custom"})`);
+    lines.push("");
+    const names = Object.keys(byExercise).sort();
+    if (!names.length) {
+        lines.push("No logged sets found for this program yet.");
+    }
+    else {
+        lines.push("=== EXERCISE HISTORY (weight lb x reps per set, oldest to newest) ===");
+        lines.push("");
+        names.forEach((name) => {
+            lines.push(`## ${name}`);
+            const rows = byExercise[name].slice().sort((a, b) => a.date.localeCompare(b.date));
+            rows.forEach((r) => { lines.push(`${r.date}: ${r.weight} lb x [${r.reps.join(", ")}]`); });
+            lines.push("");
+        });
+    }
+    const bcDates = Object.keys(bcEntries || {}).filter((dk) => bcEntries[dk] && (bcEntries[dk].actualWeight || bcEntries[dk].bf)).sort();
+    if (bcDates.length) {
+        lines.push("=== BODY COMPOSITION (date: weight, BF%, waist, belly) ===");
+        lines.push("");
+        bcDates.forEach((dk) => {
+            const e = bcEntries[dk];
+            lines.push(`${dk}: ${e.actualWeight || "—"}, ${e.bf || "—"}%, waist ${e.waist || "—"}, belly ${e.belly || "—"}`);
+        });
+        lines.push("");
+    }
+    return lines.join("\n");
+}
+// ============================================================
+// ANALYSIS EXPORT MODULE (end)
+// ============================================================
 const BASE_INPUT_STYLE = {
     width: "100%", height: "100%", border: "none", background: "transparent",
     textAlign: "center", fontSize: 16, fontWeight: 600, color: "#26221D",
@@ -507,6 +596,10 @@ function App() {
     const [bcBlockForm, setBcBlockForm] = useState({ type: "bulk", startDate: "", endDate: "", startingWeight: "", weeklyRate: "" });
     const [bcBlockError, setBcBlockError] = useState("");
     // ---- BODY COMPOSITION state (end) ----
+    // ---- ANALYSIS EXPORT state (start) ----
+    const [axOpen, setAxOpen] = useState(false);
+    const [axCopyStatus, setAxCopyStatus] = useState("");
+    // ---- ANALYSIS EXPORT state (end) ----
     const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
@@ -1062,6 +1155,41 @@ function App() {
         bcBlocksDirtyRef.current = true;
     };
     // ---- BODY COMPOSITION handlers (end) ----
+    // ---- ANALYSIS EXPORT handlers (start) ----
+    const axText = axOpen ? buildAnalysisExport(activeProgram, entries, bcEntries) : "";
+    const axDoCopy = () => {
+        const str = axText;
+        const done = () => { setAxCopyStatus("Copied to clipboard. ✓"); };
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(str).then(done, () => fallbackCopy(str, done));
+            }
+            else {
+                fallbackCopy(str, done);
+            }
+        }
+        catch (e) {
+            fallbackCopy(str, done);
+        }
+    };
+    const axDoDownload = () => {
+        try {
+            const blob = new Blob([axText], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `workout-log-analysis-${dateKey(new Date())}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+            setAxCopyStatus("File downloaded. ✓");
+        }
+        catch (e) {
+            setAxCopyStatus("Could not download — try Copy instead.");
+        }
+    };
+    // ---- ANALYSIS EXPORT handlers (end) ----
     // ---- My Programs ----
     const selectProgram = (id) => {
         currentProgramId !== id && (programsDirtyRef.current = true);
@@ -1636,7 +1764,11 @@ function App() {
                                 le.actualWeight || "—",
                                 le.bf ? `, ${le.bf}% BF` : ""),
                             React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 3 } }, "Weekly weigh-ins \u00B7 tap to open")));
-                    })())))),
+                    })())),
+                ANALYSIS_EXPORT_ENABLED && (React.createElement("div", { onClick: () => { setAxCopyStatus(""); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#fff", cursor: "pointer" } },
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 6 } }, "ANALYSIS EXPORT"),
+                    React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.ink } }, "Copy your training history to analyze with AI"),
+                    React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 3 } }, "Tap to generate \u00B7 paste into any Claude chat"))))),
             menuOpen && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
@@ -1833,7 +1965,23 @@ function App() {
                             React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 4 } }, "WEEKLY RATE (LBS/WK)"),
                             React.createElement("input", { className: "wl-ph-gray", disabled: bcBlockForm.type === "maintenance", value: bcBlockForm.weeklyRate, onChange: (e) => setBcBlockForm((f) => ({ ...f, weeklyRate: bcSanitizeDecimal(e.target.value) })), placeholder: "ex. 0.5", inputMode: "decimal", style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13, fontWeight: 700, opacity: bcBlockForm.type === "maintenance" ? 0.4 : 1, background: bcBlockForm.type === "maintenance" ? "#F5F2EC" : "#fff" } }))),
                     React.createElement("div", { style: { minHeight: bcBlockError ? 18 : 0, marginBottom: bcBlockError ? 10 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#C0392B" } }, bcBlockError),
-                    React.createElement("button", { onClick: bcAddBlock, style: { width: "100%", padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Add Block")))))));
+                    React.createElement("button", { onClick: bcAddBlock, style: { width: "100%", padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Add Block")))),
+            ANALYSIS_EXPORT_ENABLED && axOpen && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 32, background: "#fff", display: "flex", flexDirection: "column" } },
+                React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                    React.createElement("button", { onClick: () => setAxOpen(false), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Analysis Export"),
+                    React.createElement("div", { style: { width: 66 } })),
+                React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
+                    React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.45, color: "#8C857B", margin: "0 0 14px" } },
+                        "This is your full logged history for ",
+                        activeProgram.name,
+                        ", formatted for pasting into a Claude chat (this one or a new one) to get AI analysis of your trends \u2014 progress, plateaus, consistency, and so on."),
+                    React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
+                        React.createElement("button", { onClick: axDoCopy, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Copy to Clipboard"),
+                        React.createElement("button", { onClick: axDoDownload, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Download .txt")),
+                    React.createElement("div", { style: { minHeight: axCopyStatus ? 18 : 0, marginBottom: axCopyStatus ? 12 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#1F8A5B" } }, axCopyStatus),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "PREVIEW"),
+                    React.createElement("textarea", { readOnly: true, value: axText, style: { width: "100%", boxSizing: "border-box", height: 360, border: "1px solid #E7E1D7", borderRadius: 11, padding: 12, fontFamily: "ui-monospace, monospace", fontSize: 11.5, lineHeight: 1.5, color: "#26221D", background: "#FAF8F5", resize: "none" } })))))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
 
