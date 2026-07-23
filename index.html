@@ -1867,7 +1867,9 @@ function App() {
                                 const prevReps = (s.previous_reps !== undefined && s.previous_reps !== null)
                                     ? s.previous_reps
                                     : (card.data.last_session && Array.isArray(card.data.last_session.reps) ? card.data.last_session.reps[si] : undefined);
-                                const phrase = aiSetPhrase(s.tag, prevReps, s.target_reps);
+                                const phrase = (s.label && String(s.label).trim())
+                                    ? s.label
+                                    : aiSetPhrase(s.tag, prevReps, s.target_reps);
                                 return (React.createElement("div", { key: si, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: si === card.data.sets.length - 1 ? "none" : "1px solid #ECE7DE" } },
                                     React.createElement("div", null,
                                         React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 2 } },
