@@ -501,7 +501,7 @@ function axResolveExerciseName(ridToName, entries, pid, dk, rid) {
     }
     return `Exercise ${rid}`;
 }
-function buildAnalysisExport(activeProgram, entries, bcEntries) {
+function buildAnalysisExport(activeProgram, entries) {
     const pid = activeProgram.id;
     const cutoffKey = dateKey(addDays(new Date(), -7 * AX_EXPORT_WEEKS));
     const ridToName = {};
@@ -566,16 +566,6 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
             lines.push("");
         });
     }
-    const bcDates = Object.keys(bcEntries || {}).filter((dk) => dk >= cutoffKey && bcEntries[dk] && (bcEntries[dk].actualWeight || bcEntries[dk].bf)).sort();
-    if (bcDates.length) {
-        lines.push("=== BODY COMPOSITION (date: weight, BF%, waist, belly) ===");
-        lines.push("");
-        bcDates.forEach((dk) => {
-            const e = bcEntries[dk];
-            lines.push(`${dk}: ${e.actualWeight || "—"}, ${e.bf || "—"}%, waist ${e.waist || "—"}, belly ${e.belly || "—"}`);
-        });
-        lines.push("");
-    }
     return lines.join("\n");
 }
 // ============================================================
@@ -586,10 +576,9 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
 // block, the state/handlers/effect marked "AI WEEKLY TARGETS" in App(),
 // the import section inside the Analysis Export overlay, and the card
 // deck at the bottom of the focused workout view, then flip
-// AI_TARGETS_ENABLED to false. Deliberately local-only (localStorage,
-// key "aiWeeklyTargets") — not synced to Supabase — since this is a
-// disposable weekly snapshot you re-import each week, not data worth
-// preserving or merging across devices.
+// AI_TARGETS_ENABLED to false. Syncs through the same workout_logs table
+// as entries/programs (see stateRef.current, pullMerge, pushRemote) —
+// whole-object, dirty-flag gated, same pattern used for programs.
 const AI_TARGETS_ENABLED = true;
 const AI_TAG_COLORS = {
     push: { bg: "#FFE8E1", fg: "#C4441F", label: "PUSH" },
@@ -597,6 +586,25 @@ const AI_TAG_COLORS = {
     focus: { bg: "#FBEFC4", fg: "#96721F", label: "FOCUS" },
     watch: { bg: "#FDE7E5", fg: "#C0392B", label: "WATCH" },
 };
+// Turns a target set + its previous-session rep count into a short
+// descriptive phrase ("Push 11 → 12 reps", "Hold steady at 10 reps"),
+// tailored per tag rather than just printing the raw numbers.
+function aiSetPhrase(tag, prevReps, targetReps) {
+    const hasPrev = prevReps !== undefined && prevReps !== null;
+    if (tag === "push") {
+        return hasPrev && prevReps !== targetReps ? `Push ${prevReps} → ${targetReps} reps` : `Push to ${targetReps} reps`;
+    }
+    if (tag === "hold") {
+        return `Hold steady at ${targetReps} reps`;
+    }
+    if (tag === "focus") {
+        return hasPrev ? `Focus on form, ${prevReps} → ${targetReps} reps` : `Focus on form at ${targetReps} reps`;
+    }
+    if (tag === "watch") {
+        return `Watch — don't exceed ${targetReps} reps`;
+    }
+    return `${targetReps} reps`;
+}
 // Validates the imported JSON against the documented contract. Returns
 // { ok:true, data } or { ok:false, error } — error names the specific
 // missing/malformed field rather than a generic "invalid file".
@@ -724,13 +732,14 @@ function App() {
     const dirtyRef = useRef(new Set());
     const programsDirtyRef = useRef(false);
     const stateRef = useRef({ entries, programs, currentProgramId });
-    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds };
+    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets };
     const migratedRef = useRef(false);
     // ---- BODY COMPOSITION refs (start) ----
     const bcStateRef = useRef({ entries: {}, blocks: [] });
     bcStateRef.current = { entries: bcEntries, blocks: bcBlocks };
     const bcDirtyEntriesRef = useRef(new Set()); // date keys with unsynced local edits
     const bcBlocksDirtyRef = useRef(false); // true while a local block add/remove hasn't been confirmed pushed
+    const aiTargetsDirtyRef = useRef(false); // true while a local import/clear hasn't been confirmed pushed
     const bcPendingDeleteIdsRef = useRef(new Set()); // block ids removed locally, pending a soft-delete push
     const bcPushTimerRef = useRef(null);
     const bcSkipFirstSaveRef = useRef(true);
@@ -750,6 +759,11 @@ function App() {
                     setCurrentProgramId(d.currentProgramId);
                 if (Array.isArray(d.deletedProgramIds))
                     setDeletedProgramIds(d.deletedProgramIds);
+                if (d.aiTargets) {
+                    const check = validateWeeklyTargets(d.aiTargets);
+                    if (check.ok)
+                        setAiTargets(check.data);
+                }
             }
         }
         catch (e) { }
@@ -783,34 +797,9 @@ function App() {
         }
     }, [bcEntries, bcBlocks]);
     // ---- BODY COMPOSITION local load/save (end) ----
-    // ---- AI WEEKLY TARGETS local load/save (start) — local-only, no sync ----
-    useEffect(() => {
-        try {
-            const raw = localStorage.getItem("aiWeeklyTargets");
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                const check = validateWeeklyTargets(parsed);
-                if (check.ok)
-                    setAiTargets(check.data);
-            }
-        }
-        catch (e) { }
-    }, []);
-    const aiImportSkipFirstRef = useRef(true);
-    useEffect(() => {
-        if (aiImportSkipFirstRef.current) {
-            aiImportSkipFirstRef.current = false;
-            return;
-        }
-        try {
-            if (aiTargets)
-                localStorage.setItem("aiWeeklyTargets", JSON.stringify(aiTargets));
-            else
-                localStorage.removeItem("aiWeeklyTargets");
-        }
-        catch (e) { }
-    }, [aiTargets]);
-    // ---- AI WEEKLY TARGETS local load/save (end) ----
+    // (AI Weekly Targets persistence now flows through the main sync cycle
+    // below, alongside entries/programs — see stateRef.current and the
+    // pullMerge/pushRemote handling further down.)
     useEffect(() => {
         const t = setTimeout(() => {
             if (migratedRef.current)
@@ -916,6 +905,7 @@ function App() {
             return;
         const pushedKeys = new Set(dirtyRef.current);
         const wasProgramsDirty = programsDirtyRef.current;
+        const wasAiTargetsDirty = aiTargetsDirtyRef.current;
         try {
             const { error } = await supa.from("workout_logs").upsert({ user_id: uid, data: stateRef.current, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
             if (error) {
@@ -926,6 +916,8 @@ function App() {
                 pushedKeys.forEach((k) => dirtyRef.current.delete(k));
                 if (wasProgramsDirty)
                     programsDirtyRef.current = false;
+                if (wasAiTargetsDirty)
+                    aiTargetsDirtyRef.current = false;
                 setSyncStatus("Synced ✓");
                 setSyncOk(true);
             }
@@ -988,6 +980,19 @@ function App() {
                         mergedPrograms.push(lp); });
                     setPrograms(mergedPrograms.filter((p) => !mergedDeleted.includes(p.id)));
                     setDeletedProgramIds(mergedDeleted);
+                }
+                // AI Weekly Targets: whole-object, last-write-wins — a local
+                // import/clear that hasn't been confirmed pushed yet always wins
+                // over an incoming pull, same dirty-flag pattern as programs.
+                if (!aiTargetsDirtyRef.current && remote.aiTargets !== undefined) {
+                    if (remote.aiTargets === null) {
+                        setAiTargets(null);
+                    }
+                    else {
+                        const check = validateWeeklyTargets(remote.aiTargets);
+                        if (check.ok)
+                            setAiTargets(check.data);
+                    }
                 }
                 setTimeout(() => { persistLocal(); pullingRef.current = false; pushRemote(); }, 0);
             }
@@ -1066,7 +1071,7 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, programs, currentProgramId, deletedProgramIds, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, persistLocal, schedulePush]);
     const C = colors(ACCENT);
     const activeProgram = getActiveProgram(currentProgramId, programs);
     // ---- STOPWATCH effects + handlers (start) ----
@@ -1274,7 +1279,7 @@ function App() {
     };
     // ---- BODY COMPOSITION handlers (end) ----
     // ---- ANALYSIS EXPORT handlers (start) ----
-    const axText = axOpen ? buildAnalysisExport(activeProgram, entries, bcEntries) : "";
+    const axText = axOpen ? buildAnalysisExport(activeProgram, entries) : "";
     const axDoCopy = () => {
         const str = axText;
         const done = () => { setAxCopyStatus("Copied to clipboard. ✓"); };
@@ -1330,6 +1335,7 @@ function App() {
             setAiImportOk(false);
             return;
         }
+        aiTargetsDirtyRef.current = true;
         setAiTargets(check.data);
         setAiImportText("");
         setAiImportStatus(`Loaded targets for week of ${check.data.week_of}. ✓`);
@@ -1346,6 +1352,7 @@ function App() {
         reader.readAsText(file);
     };
     const clearAiTargets = () => {
+        aiTargetsDirtyRef.current = true;
         setAiTargets(null);
         setAiImportStatus("Targets cleared.");
         setAiImportOk(true);
@@ -1854,14 +1861,16 @@ function App() {
                                 "]")),
                             React.createElement("div", { style: { marginBottom: 12 } }, card.data.sets.map((s, si) => {
                                 const tagInfo = s.tag && AI_TAG_COLORS[s.tag];
-                                return (React.createElement("div", { key: si, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0", borderBottom: si === card.data.sets.length - 1 ? "none" : "1px solid #ECE7DE" } },
-                                    React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.ink } },
-                                        "Set ",
-                                        s.set || si + 1,
-                                        ": ",
-                                        s.target_weight !== undefined ? `${s.target_weight} x ` : "",
-                                        s.target_reps),
-                                    tagInfo && (React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".04em", color: tagInfo.fg, background: tagInfo.bg, borderRadius: 6, padding: "3px 8px" } }, tagInfo.label))));
+                                const prevReps = card.data.last_session && Array.isArray(card.data.last_session.reps) ? card.data.last_session.reps[si] : undefined;
+                                const phrase = aiSetPhrase(s.tag, prevReps, s.target_reps);
+                                return (React.createElement("div", { key: si, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: si === card.data.sets.length - 1 ? "none" : "1px solid #ECE7DE" } },
+                                    React.createElement("div", null,
+                                        React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 2 } },
+                                            "Set ",
+                                            s.set || si + 1,
+                                            s.target_weight !== undefined ? ` — ${s.target_weight} lb` : ""),
+                                        React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, phrase)),
+                                    tagInfo && (React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".04em", color: tagInfo.fg, background: tagInfo.bg, borderRadius: 6, padding: "3px 8px", flexShrink: 0, marginLeft: 8 } }, tagInfo.label))));
                             })),
                             card.data.insight && (React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.4, color: "#5E574C", fontStyle: "italic" } }, card.data.insight)))))))),
                         cards.length > 1 && (React.createElement("div", { style: { display: "flex", justifyContent: "center", gap: 6, marginTop: 10 } }, cards.map((_, i) => (React.createElement("div", { key: i, style: { width: 6, height: 6, borderRadius: "50%", background: i === aiDeckIndex ? C.a : "#E7E1D7" } })))))));
