@@ -505,11 +505,12 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
     const pid = activeProgram.id;
     const cutoffKey = dateKey(addDays(new Date(), -7 * AX_EXPORT_WEEKS));
     const ridToName = {};
+    const ridToRepRange = {};
     if (activeProgram.kind === "weekly") {
-        activeProgram.days.forEach((d) => d.exercises.forEach((ex) => { ridToName[ex.rid] = ex.name; }));
+        activeProgram.days.forEach((d) => d.exercises.forEach((ex) => { ridToName[ex.rid] = ex.name; ridToRepRange[ex.rid] = ex.repRange; }));
     }
     else {
-        (activeProgram.dayTypes || []).forEach((dt) => dt.exercises.forEach((ex) => { ridToName[ex.rid] = ex.name; }));
+        (activeProgram.dayTypes || []).forEach((dt) => dt.exercises.forEach((ex) => { ridToName[ex.rid] = ex.name; ridToRepRange[ex.rid] = ex.repRange; }));
     }
     const byExercise = {}; // resolved name -> [{date, weight, reps:[...]}]
     const wPrefix = `wd|${pid}|`;
@@ -537,7 +538,7 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
         const name = axResolveExerciseName(ridToName, entries, pid, dk, rid);
         if (!byExercise[name])
             byExercise[name] = [];
-        byExercise[name].push({ date: dk, weight, reps });
+        byExercise[name].push({ date: dk, weight, reps, rid });
     });
     const lines = [];
     lines.push(`This is my workout log data from the last ${AX_EXPORT_WEEKS} weeks, exported from my personal training app. Please analyze trends across it — progress, plateaus, consistency, anything worth flagging. Be direct and genuinely honest, not just encouraging — if something looks like it's stalled, regressing, or inconsistent, say so plainly rather than softening it. One important caveat: I sometimes change equipment or something about how an exercise is performed, which can cause a large jump or drop in logged weight that has nothing to do with actual strength change — treat unusually large jumps between sessions as a likely sign that something about the exercise changed, not as a real performance swing, unless the surrounding data suggests otherwise.`);
@@ -557,8 +558,10 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
         lines.push("=== EXERCISE HISTORY (weight lb x reps per set, oldest to newest) ===");
         lines.push("");
         names.forEach((name) => {
-            lines.push(`## ${name}`);
             const rows = byExercise[name].slice().sort((a, b) => a.date.localeCompare(b.date));
+            const repRange = ridToRepRange[rows[0].rid];
+            const header = (repRange && repRange !== "-") ? `## ${name} (rep range: ${repRange})` : `## ${name}`;
+            lines.push(header);
             rows.forEach((r) => { lines.push(`${r.date}: ${r.weight} lb x [${r.reps.join(", ")}]`); });
             lines.push("");
         });
