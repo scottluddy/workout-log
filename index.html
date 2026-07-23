@@ -489,6 +489,7 @@ function findAdjacentSameDayType(entries, programId, fromKey, dtId, dir, maxDays
 // to false. Purely a read-only formatter over data that already exists —
 // no new storage, no sync, no network calls of its own.
 const ANALYSIS_EXPORT_ENABLED = true;
+const AX_EXPORT_WEEKS = 6; // how far back the export looks — adjust freely
 function axResolveExerciseName(ridToName, entries, pid, dk, rid) {
     if (ridToName[rid])
         return ridToName[rid];
@@ -502,6 +503,7 @@ function axResolveExerciseName(ridToName, entries, pid, dk, rid) {
 }
 function buildAnalysisExport(activeProgram, entries, bcEntries) {
     const pid = activeProgram.id;
+    const cutoffKey = dateKey(addDays(new Date(), -7 * AX_EXPORT_WEEKS));
     const ridToName = {};
     if (activeProgram.kind === "weekly") {
         activeProgram.days.forEach((d) => d.exercises.forEach((ex) => { ridToName[ex.rid] = ex.name; }));
@@ -519,6 +521,8 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
         if (parts.length !== 2)
             return;
         const dk = parts[0], rid = parts[1];
+        if (dk < cutoffKey)
+            return;
         const weight = entries[k];
         if (!weight)
             return;
@@ -536,15 +540,18 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
         byExercise[name].push({ date: dk, weight, reps });
     });
     const lines = [];
-    lines.push("This is my workout log data, exported from my personal training app. Please analyze trends across it — progress, plateaus, consistency, anything worth flagging. Be direct and genuinely honest, not just encouraging — if something looks like it's stalled, regressing, or inconsistent, say so plainly rather than softening it. One important caveat: I sometimes change equipment or something about how an exercise is performed, which can cause a large jump or drop in logged weight that has nothing to do with actual strength change — treat unusually large jumps between sessions as a likely sign that something about the exercise changed, not as a real performance swing, unless the surrounding data suggests otherwise.");
+    lines.push(`This is my workout log data from the last ${AX_EXPORT_WEEKS} weeks, exported from my personal training app. Please analyze trends across it — progress, plateaus, consistency, anything worth flagging. Be direct and genuinely honest, not just encouraging — if something looks like it's stalled, regressing, or inconsistent, say so plainly rather than softening it. One important caveat: I sometimes change equipment or something about how an exercise is performed, which can cause a large jump or drop in logged weight that has nothing to do with actual strength change — treat unusually large jumps between sessions as a likely sign that something about the exercise changed, not as a real performance swing, unless the surrounding data suggests otherwise.`);
+    lines.push("");
+    lines.push("Then generate a weekly-targets.json file for my next week of training, following the Weekly Targets Template schema saved in this project (if you don't have that file, ask me for it rather than guessing the format). One entry per exercise I actually have programmed, target weight/reps per set, a tag of push/hold/focus/watch per set, and a short specific insight per exercise. If an exercise has a different number of sets on different days, give each variant its own entry with a day_tier label, matched by how many sets are in its array.");
     lines.push("");
     lines.push("WORKOUT LOG — ANALYSIS EXPORT");
     lines.push(`Generated: ${dateKey(new Date())}`);
+    lines.push(`Window: last ${AX_EXPORT_WEEKS} weeks (since ${cutoffKey})`);
     lines.push(`Program: ${activeProgram.name} (${activeProgram.kind === "weekly" ? "Weekly" : "Custom"})`);
     lines.push("");
     const names = Object.keys(byExercise).sort();
     if (!names.length) {
-        lines.push("No logged sets found for this program yet.");
+        lines.push("No logged sets found for this program in this window.");
     }
     else {
         lines.push("=== EXERCISE HISTORY (weight lb x reps per set, oldest to newest) ===");
@@ -556,7 +563,7 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
             lines.push("");
         });
     }
-    const bcDates = Object.keys(bcEntries || {}).filter((dk) => bcEntries[dk] && (bcEntries[dk].actualWeight || bcEntries[dk].bf)).sort();
+    const bcDates = Object.keys(bcEntries || {}).filter((dk) => dk >= cutoffKey && bcEntries[dk] && (bcEntries[dk].actualWeight || bcEntries[dk].bf)).sort();
     if (bcDates.length) {
         lines.push("=== BODY COMPOSITION (date: weight, BF%, waist, belly) ===");
         lines.push("");
@@ -570,6 +577,76 @@ function buildAnalysisExport(activeProgram, entries, bcEntries) {
 }
 // ============================================================
 // ANALYSIS EXPORT MODULE (end)
+// ============================================================
+// ============================================================
+// AI WEEKLY TARGETS MODULE (start) — safe to delete entirely: remove this
+// block, the state/handlers/effect marked "AI WEEKLY TARGETS" in App(),
+// the import section inside the Analysis Export overlay, and the card
+// deck at the bottom of the focused workout view, then flip
+// AI_TARGETS_ENABLED to false. Deliberately local-only (localStorage,
+// key "aiWeeklyTargets") — not synced to Supabase — since this is a
+// disposable weekly snapshot you re-import each week, not data worth
+// preserving or merging across devices.
+const AI_TARGETS_ENABLED = true;
+const AI_TAG_COLORS = {
+    push: { bg: "#FFE8E1", fg: "#C4441F", label: "PUSH" },
+    hold: { bg: "#E3EEFF", fg: "#2C5FCC", label: "HOLD" },
+    focus: { bg: "#FBEFC4", fg: "#96721F", label: "FOCUS" },
+    watch: { bg: "#FDE7E5", fg: "#C0392B", label: "WATCH" },
+};
+// Validates the imported JSON against the documented contract. Returns
+// { ok:true, data } or { ok:false, error } — error names the specific
+// missing/malformed field rather than a generic "invalid file".
+function validateWeeklyTargets(obj) {
+    if (!obj || typeof obj !== "object")
+        return { ok: false, error: "Not a valid JSON object." };
+    if (typeof obj.week_of !== "string" || !obj.week_of.trim())
+        return { ok: false, error: 'Missing or invalid "week_of" (expected a date string).' };
+    if (!Array.isArray(obj.exercises))
+        return { ok: false, error: 'Missing or invalid "exercises" (expected an array).' };
+    for (let i = 0; i < obj.exercises.length; i++) {
+        const ex = obj.exercises[i];
+        if (!ex || typeof ex !== "object")
+            return { ok: false, error: `exercises[${i}] is not an object.` };
+        if (typeof ex.name !== "string" || !ex.name.trim())
+            return { ok: false, error: `exercises[${i}] is missing a valid "name".` };
+        if (!Array.isArray(ex.sets) || !ex.sets.length)
+            return { ok: false, error: `"${ex.name}" is missing a valid "sets" array.` };
+        for (let j = 0; j < ex.sets.length; j++) {
+            const s = ex.sets[j];
+            if (!s || typeof s !== "object" || typeof s.target_reps !== "number") {
+                return { ok: false, error: `"${ex.name}" set ${j + 1} is missing a valid "target_reps".` };
+            }
+        }
+    }
+    return { ok: true, data: obj };
+}
+// Given the exercises actually programmed for a specific day (name + how
+// many sets each has), returns the matching target entries in that same
+// order. day_tier-tagged entries only match when their set count equals
+// what's actually programmed that day — see the note in chat about why.
+function getAiTargetsForDay(aiTargets, dayExercises) {
+    if (!aiTargets || !Array.isArray(aiTargets.exercises) || !dayExercises || !dayExercises.length)
+        return [];
+    const out = [];
+    dayExercises.forEach((dex) => {
+        const candidates = aiTargets.exercises.filter((t) => t.name.trim().toLowerCase() === dex.name.trim().toLowerCase());
+        if (!candidates.length)
+            return;
+        let match = null;
+        if (candidates.length === 1 && !candidates[0].day_tier) {
+            match = candidates[0];
+        }
+        else {
+            match = candidates.find((t) => Array.isArray(t.sets) && t.sets.length === dex.sets) || null;
+        }
+        if (match)
+            out.push(match);
+    });
+    return out;
+}
+// ============================================================
+// AI WEEKLY TARGETS MODULE (end)
 // ============================================================
 const BASE_INPUT_STYLE = {
     width: "100%", height: "100%", border: "none", background: "transparent",
@@ -600,6 +677,14 @@ function App() {
     const [axOpen, setAxOpen] = useState(false);
     const [axCopyStatus, setAxCopyStatus] = useState("");
     // ---- ANALYSIS EXPORT state (end) ----
+    // ---- AI WEEKLY TARGETS state (start) ----
+    const [aiTargets, setAiTargets] = useState(null); // null | parsed weekly-targets object
+    const [aiImportText, setAiImportText] = useState("");
+    const [aiImportStatus, setAiImportStatus] = useState("");
+    const [aiImportOk, setAiImportOk] = useState(true);
+    const [aiDeckIndex, setAiDeckIndex] = useState(0);
+    const aiDeckRef = useRef(null);
+    // ---- AI WEEKLY TARGETS state (end) ----
     const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
@@ -695,6 +780,34 @@ function App() {
         }
     }, [bcEntries, bcBlocks]);
     // ---- BODY COMPOSITION local load/save (end) ----
+    // ---- AI WEEKLY TARGETS local load/save (start) — local-only, no sync ----
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem("aiWeeklyTargets");
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                const check = validateWeeklyTargets(parsed);
+                if (check.ok)
+                    setAiTargets(check.data);
+            }
+        }
+        catch (e) { }
+    }, []);
+    const aiImportSkipFirstRef = useRef(true);
+    useEffect(() => {
+        if (aiImportSkipFirstRef.current) {
+            aiImportSkipFirstRef.current = false;
+            return;
+        }
+        try {
+            if (aiTargets)
+                localStorage.setItem("aiWeeklyTargets", JSON.stringify(aiTargets));
+            else
+                localStorage.removeItem("aiWeeklyTargets");
+        }
+        catch (e) { }
+    }, [aiTargets]);
+    // ---- AI WEEKLY TARGETS local load/save (end) ----
     useEffect(() => {
         const t = setTimeout(() => {
             if (migratedRef.current)
@@ -995,6 +1108,8 @@ function App() {
         document.addEventListener("visibilitychange", onVis);
         return () => document.removeEventListener("visibilitychange", onVis);
     }, []);
+    // ---- AI WEEKLY TARGETS: reset deck position on day change ----
+    useEffect(() => { setAiDeckIndex(0); }, [focusedDate]);
     // ---- BODY COMPOSITION: open pre-scrolled ~4 weeks before today ----
     useEffect(() => {
         if (bcView !== "table")
@@ -1190,6 +1305,49 @@ function App() {
         }
     };
     // ---- ANALYSIS EXPORT handlers (end) ----
+    // ---- AI WEEKLY TARGETS handlers (start) ----
+    const aiImportFromText = (text) => {
+        if (!text || !text.trim()) {
+            setAiImportStatus("Nothing to import — choose a file or paste the JSON.");
+            setAiImportOk(false);
+            return;
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
+        }
+        catch (e) {
+            setAiImportStatus("That isn't valid JSON — check for a missing bracket or comma.");
+            setAiImportOk(false);
+            return;
+        }
+        const check = validateWeeklyTargets(parsed);
+        if (!check.ok) {
+            setAiImportStatus(check.error);
+            setAiImportOk(false);
+            return;
+        }
+        setAiTargets(check.data);
+        setAiImportText("");
+        setAiImportStatus(`Loaded targets for week of ${check.data.week_of}. ✓`);
+        setAiImportOk(true);
+    };
+    const onAiTargetsFile = (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = "";
+        if (!file)
+            return;
+        const reader = new FileReader();
+        reader.onload = () => aiImportFromText(String(reader.result || ""));
+        reader.onerror = () => { setAiImportStatus("Could not read that file."); setAiImportOk(false); };
+        reader.readAsText(file);
+    };
+    const clearAiTargets = () => {
+        setAiTargets(null);
+        setAiImportStatus("Targets cleared.");
+        setAiImportOk(true);
+    };
+    // ---- AI WEEKLY TARGETS handlers (end) ----
     // ---- My Programs ----
     const selectProgram = (id) => {
         currentProgramId !== id && (programsDirtyRef.current = true);
@@ -1591,6 +1749,8 @@ function App() {
         needsDayTypePick = activeProgram.kind === "custom" && fRows === null;
         if (!needsDayTypePick) {
             const rowsToShow = fRows || [];
+            // ---- AI WEEKLY TARGETS: this day's matching cards ----
+            const dayAiTargets = AI_TARGETS_ENABLED ? getAiTargetsForDay(aiTargets, rowsToShow.map((r) => ({ name: r.name, sets: r.sets }))) : [];
             const fLeft = [
                 React.createElement("div", { key: "fcorner", style: { position: "sticky", top: 0, zIndex: 6, height: HEAD, background: C.headBg, borderBottom: cellBorder, borderRight: darkBorder, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "EXERCISE"),
             ];
@@ -1661,7 +1821,48 @@ function App() {
                     React.createElement("div", { style: { fontSize: 38, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center", marginBottom: 14 } }, formatStopwatch(swElapsedMs)),
                     React.createElement("div", { style: { display: "flex", gap: 8 } },
                         !swRunning ? (React.createElement("button", { onClick: swStart, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Start")) : (React.createElement("button", { onClick: swStop, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: "#5E574C", color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Stop")),
-                        React.createElement("button", { onClick: swReset, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Reset")))));
+                        React.createElement("button", { onClick: swReset, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Reset"))),
+                AI_TARGETS_ENABLED && dayAiTargets.length > 0 && (() => {
+                    const cards = [];
+                    if (aiTargets.overview)
+                        cards.push({ kind: "overview", text: aiTargets.overview, weekOf: aiTargets.week_of });
+                    dayAiTargets.forEach((t) => cards.push({ kind: "exercise", data: t }));
+                    const onDeckScroll = () => {
+                        const el = aiDeckRef.current;
+                        if (!el)
+                            return;
+                        const w = el.firstChild ? el.firstChild.offsetWidth + 12 : 1;
+                        setAiDeckIndex(Math.max(0, Math.min(cards.length - 1, Math.round(el.scrollLeft / w))));
+                    };
+                    return (React.createElement("div", { style: { margin: "0 0 28px" } },
+                        React.createElement("div", { style: { padding: "0 16px 10px", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "THIS WEEK'S AI TARGETS"),
+                        React.createElement("div", { ref: aiDeckRef, onScroll: onDeckScroll, className: "wl-scroll", style: { display: "flex", gap: 12, overflowX: "auto", scrollSnapType: "x mandatory", padding: "0 16px 4px", WebkitOverflowScrolling: "touch" } }, cards.map((card, i) => (React.createElement("div", { key: i, style: { flex: "0 0 calc(100% - 32px)", scrollSnapAlign: "start", border: "1px solid #E7E1D7", borderRadius: 14, padding: 16, background: card.kind === "overview" ? "#FFF3EE" : "#fff", boxSizing: "border-box" } }, card.kind === "overview" ? (React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.a, marginBottom: 8 } },
+                                "WEEK OF ",
+                                card.weekOf),
+                            React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600, color: C.ink, lineHeight: 1.45 } }, card.text))) : (React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: 15.5, fontWeight: 800, color: C.ink, marginBottom: 3 } }, card.data.name),
+                            card.data.last_session && (React.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 12 } },
+                                "Last: ",
+                                card.data.last_session.weight,
+                                card.data.last_session.unit ? " " + card.data.last_session.unit : "",
+                                " x [",
+                                (card.data.last_session.reps || []).join(", "),
+                                "]")),
+                            React.createElement("div", { style: { marginBottom: 12 } }, card.data.sets.map((s, si) => {
+                                const tagInfo = s.tag && AI_TAG_COLORS[s.tag];
+                                return (React.createElement("div", { key: si, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0", borderBottom: si === card.data.sets.length - 1 ? "none" : "1px solid #ECE7DE" } },
+                                    React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.ink } },
+                                        "Set ",
+                                        s.set || si + 1,
+                                        ": ",
+                                        s.target_weight !== undefined ? `${s.target_weight} x ` : "",
+                                        s.target_reps),
+                                    tagInfo && (React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".04em", color: tagInfo.fg, background: tagInfo.bg, borderRadius: 6, padding: "3px 8px" } }, tagInfo.label))));
+                            })),
+                            card.data.insight && (React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.4, color: "#5E574C", fontStyle: "italic" } }, card.data.insight)))))))),
+                        cards.length > 1 && (React.createElement("div", { style: { display: "flex", justifyContent: "center", gap: 6, marginTop: 10 } }, cards.map((_, i) => (React.createElement("div", { key: i, style: { width: 6, height: 6, borderRadius: "50%", background: i === aiDeckIndex ? C.a : "#E7E1D7" } })))))));
+                })()));
         }
     }
     // ---- Calendar view content ----
@@ -1970,7 +2171,9 @@ function App() {
                     React.createElement("div", { style: { width: 66 } })),
                 React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.45, color: "#8C857B", margin: "0 0 14px" } },
-                        "This is your full logged history for ",
+                        "This is your last ",
+                        AX_EXPORT_WEEKS,
+                        " weeks of logged history for ",
                         activeProgram.name,
                         ", formatted for pasting into a Claude chat (this one or a new one) to get AI analysis of your trends \u2014 progress, plateaus, consistency, and so on."),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
@@ -1978,7 +2181,19 @@ function App() {
                         React.createElement("button", { onClick: axDoDownload, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Download .txt")),
                     React.createElement("div", { style: { minHeight: axCopyStatus ? 18 : 0, marginBottom: axCopyStatus ? 12 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#1F8A5B" } }, axCopyStatus),
                     React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "PREVIEW"),
-                    React.createElement("textarea", { readOnly: true, value: axText, style: { width: "100%", boxSizing: "border-box", height: 360, border: "1px solid #E7E1D7", borderRadius: 11, padding: 12, fontFamily: "ui-monospace, monospace", fontSize: 11.5, lineHeight: 1.5, color: "#26221D", background: "#FAF8F5", resize: "none" } })))))));
+                    React.createElement("textarea", { readOnly: true, value: axText, style: { width: "100%", boxSizing: "border-box", height: 360, border: "1px solid #E7E1D7", borderRadius: 11, padding: 12, fontFamily: "ui-monospace, monospace", fontSize: 11.5, lineHeight: 1.5, color: "#26221D", background: "#FAF8F5", resize: "none" } }),
+                    AI_TARGETS_ENABLED && (React.createElement("div", { style: { marginTop: 24, paddingTop: 20, borderTop: `1px solid ${C.line}` } },
+                        React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 6 } }, "AI WEEKLY TARGETS"),
+                        React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.4, color: "#8C857B", margin: "0 0 10px" } }, "Ask Claude to turn your analysis into a weekly-targets JSON file, then import it here \u2014 it'll show as target cards at the bottom of matching workout days."),
+                        React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: aiTargets ? "#1F8A5B" : C.muted, marginBottom: 10 } }, aiTargets ? `Loaded: week of ${aiTargets.week_of}` : "No targets imported yet"),
+                        React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
+                            React.createElement("label", { style: { flex: 1, display: "block", padding: 11, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } },
+                                "Choose file",
+                                React.createElement("input", { type: "file", accept: ".json,application/json", onChange: onAiTargetsFile, style: { display: "none" } })),
+                            aiTargets && (React.createElement("button", { onClick: clearAiTargets, style: { padding: "11px 14px", border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Clear"))),
+                        React.createElement("textarea", { value: aiImportText, onChange: (e) => setAiImportText(e.target.value), placeholder: "\u2026or paste the weekly-targets JSON here", style: { width: "100%", boxSizing: "border-box", height: 90, border: "1px solid #E7E1D7", borderRadius: 11, padding: 10, fontFamily: "ui-monospace, monospace", fontSize: 12, color: "#26221D", resize: "none", marginBottom: 8 } }),
+                        React.createElement("button", { onClick: () => aiImportFromText(aiImportText), style: { width: "100%", padding: 11, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Import pasted JSON"),
+                        React.createElement("div", { style: { minHeight: aiImportStatus ? 18 : 0, marginTop: 10, fontSize: 12, fontWeight: 700, textAlign: "center", color: aiImportOk ? "#1F8A5B" : "#C0392B" } }, aiImportStatus)))))))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
 
