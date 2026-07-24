@@ -848,6 +848,7 @@ function App() {
     // ---- AI WEEKLY TARGETS state (end) ----
     // ---- CARDIO state (start) ----
     const [cardioSessions, setCardioSessions] = useState([]); // [{id, date, startTime, endTime, durationSec}]
+    const [cardioDeletedSessionIds, setCardioDeletedSessionIds] = useState([]); // tombstones — same fix as program deletion
     const [cardioUnlockedWeekKeys, setCardioUnlockedWeekKeys] = useState([]);
     const [cardioRevealedCount, setCardioRevealedCount] = useState(0);
     const [cardioView, setCardioView] = useState(null); // null | "main"
@@ -893,7 +894,7 @@ function App() {
     const dirtyRef = useRef(new Set());
     const programsDirtyRef = useRef(false);
     const stateRef = useRef({ entries, programs, currentProgramId });
-    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioUnlockedWeekKeys, cardioRevealedCount };
+    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount };
     const migratedRef = useRef(false);
     // ---- BODY COMPOSITION refs (start) ----
     const bcStateRef = useRef({ entries: {}, blocks: [] });
@@ -927,6 +928,8 @@ function App() {
                 }
                 if (Array.isArray(d.cardioSessions))
                     setCardioSessions(d.cardioSessions);
+                if (Array.isArray(d.cardioDeletedSessionIds))
+                    setCardioDeletedSessionIds(d.cardioDeletedSessionIds);
                 if (Array.isArray(d.cardioUnlockedWeekKeys))
                     setCardioUnlockedWeekKeys(d.cardioUnlockedWeekKeys);
                 if (typeof d.cardioRevealedCount === "number")
@@ -1170,11 +1173,15 @@ function App() {
                 // ever counts up, never down).
                 if (!cardioDirtyRef.current) {
                     if (Array.isArray(remote.cardioSessions)) {
+                        const localDeleted = stateRef.current.cardioDeletedSessionIds || [];
+                        const remoteDeleted = Array.isArray(remote.cardioDeletedSessionIds) ? remote.cardioDeletedSessionIds : [];
+                        const mergedDeleted = Array.from(new Set([...localDeleted, ...remoteDeleted]));
                         const localSessions = stateRef.current.cardioSessions || [];
                         const merged = remote.cardioSessions.slice();
                         localSessions.forEach((ls) => { if (!merged.find((rs) => rs.id === ls.id))
                             merged.push(ls); });
-                        setCardioSessions(merged);
+                        setCardioSessions(merged.filter((s) => !mergedDeleted.includes(s.id)));
+                        setCardioDeletedSessionIds(mergedDeleted);
                     }
                     if (Array.isArray(remote.cardioUnlockedWeekKeys)) {
                         const localKeys = stateRef.current.cardioUnlockedWeekKeys || [];
@@ -1261,7 +1268,7 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioUnlockedWeekKeys, cardioRevealedCount, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, persistLocal, schedulePush]);
     const C = colors(ACCENT);
     const activeProgram = getActiveProgram(currentProgramId, programs);
     // ---- STOPWATCH effects + handlers (start) ----
@@ -1603,6 +1610,7 @@ function App() {
             return;
         cardioDirtyRef.current = true;
         setCardioSessions((cur) => cur.filter((s) => s.id !== id));
+        setCardioDeletedSessionIds((cur) => cur.includes(id) ? cur : [...cur, id]);
     };
     // Detect newly-earned unlocks whenever sessions change, reveal one
     // prompt per newly-met week (in order, stopping at the end of the list).
