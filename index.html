@@ -1597,6 +1597,13 @@ function App() {
         setCardioSwStartedAt(null);
         setCardioSwAccumulatedMs(0);
     };
+    const cardioRemoveSession = (id) => {
+        const ok = window.confirm("Delete this cardio session? This can't be undone.");
+        if (!ok)
+            return;
+        cardioDirtyRef.current = true;
+        setCardioSessions((cur) => cur.filter((s) => s.id !== id));
+    };
     // Detect newly-earned unlocks whenever sessions change, reveal one
     // prompt per newly-met week (in order, stopping at the end of the list).
     useEffect(() => {
@@ -2490,8 +2497,7 @@ function App() {
                 const thisWeekKey = cardioWeekStartKey(new Date());
                 const rawThisWeek = (totals[thisWeekKey] && totals[thisWeekKey].raw) || 0;
                 const nextTarget = Math.min(CARDIO_TARGET_CAP, thisWeek.target + CARDIO_WEEKLY_INCREMENT);
-                const todayKeyStr = dateKey(new Date());
-                const todaysSessions = cardioSessions.filter((s) => s.date === todayKeyStr).sort((a, b) => a.startTime.localeCompare(b.startTime));
+                const thisWeekSessions = cardioSessions.filter((s) => cardioWeekStartKey(keyToDate(s.date)) === thisWeekKey).sort((a, b) => a.startTime.localeCompare(b.startTime));
                 const copyPrompt = (text) => {
                     try {
                         if (navigator.clipboard && navigator.clipboard.writeText)
@@ -2554,11 +2560,20 @@ function App() {
                                         wd.getDate()));
                                 }))));
                         })(),
-                        todaysSessions.length > 0 && (React.createElement("div", { style: { marginBottom: 20 } },
-                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "TODAY'S SESSIONS"),
-                            todaysSessions.map((s) => (React.createElement("div", { key: s.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #ECE7DE", fontSize: 12.5 } },
-                                React.createElement("div", { style: { color: C.ink, fontWeight: 600 } }, cardioFormatDuration(s.durationSec)),
-                                React.createElement("div", { style: { color: C.muted } }, s.durationSec >= CARDIO_FLOOR_SEC ? `${bcFormatWeight(cardioEffectiveMinutes(s.durationSec))} eff. min` : "below 5:00 — no credit")))))),
+                        thisWeekSessions.length > 0 && (React.createElement("div", { style: { marginBottom: 20 } },
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "THIS WEEK'S SESSIONS"),
+                            thisWeekSessions.map((s) => {
+                                const sd = keyToDate(s.date);
+                                return (React.createElement("div", { key: s.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #ECE7DE", fontSize: 12.5 } },
+                                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 } },
+                                        React.createElement("div", { style: { color: C.muted, fontWeight: 700, fontSize: 11, flexShrink: 0 } },
+                                            MONTH_NAMES[sd.getMonth()].slice(0, 3),
+                                            " ",
+                                            sd.getDate()),
+                                        React.createElement("div", { style: { color: C.ink, fontWeight: 600, flexShrink: 0 } }, cardioFormatDuration(s.durationSec)),
+                                        React.createElement("div", { style: { color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, s.durationSec >= CARDIO_FLOOR_SEC ? `${bcFormatWeight(cardioEffectiveMinutes(s.durationSec))} eff. min` : "below 5:00 — no credit")),
+                                    React.createElement("button", { onClick: () => cardioRemoveSession(s.id), title: "Delete session", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: "4px 0 4px 10px", flexShrink: 0, lineHeight: 1 } }, "\u2715")));
+                            }))),
                         cardioRevealedCount > 0 && (React.createElement("div", null,
                             React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } },
                                 "UNLOCKED (",
