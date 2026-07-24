@@ -2532,6 +2532,28 @@ function App() {
                                 React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink } },
                                     nextTarget,
                                     " min"))),
+                        progression.length > 0 && (() => {
+                            const recentWeeks = progression.slice(-10);
+                            const maxVal = Math.max(...recentWeeks.map((w) => Math.max(w.effective, w.target)), 1);
+                            const CHART_H = 100;
+                            return (React.createElement("div", { style: { marginBottom: 20 } },
+                                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 4 } }, "WEEKLY EFFECTIVE MINUTES"),
+                                React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 10 } }, "Green = target met that week"),
+                                React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 6, height: CHART_H, padding: "0 2px" } }, recentWeeks.map((w) => {
+                                    const barH = Math.max(3, Math.round((w.effective / maxVal) * CHART_H));
+                                    const wd = keyToDate(w.weekKey);
+                                    return (React.createElement("div", { key: w.weekKey, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" } },
+                                        React.createElement("div", { style: { fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 } }, Math.round(w.effective)),
+                                        React.createElement("div", { style: { width: "100%", maxWidth: 26, height: barH, borderRadius: "4px 4px 2px 2px", background: w.met ? "#2FAE66" : "#E7E1D7" } })));
+                                })),
+                                React.createElement("div", { style: { display: "flex", gap: 6, padding: "6px 2px 0" } }, recentWeeks.map((w) => {
+                                    const wd = keyToDate(w.weekKey);
+                                    return (React.createElement("div", { key: w.weekKey, style: { flex: 1, textAlign: "center", fontSize: 9, fontWeight: 600, color: C.muted } },
+                                        MONTH_NAMES[wd.getMonth()].slice(0, 3),
+                                        " ",
+                                        wd.getDate()));
+                                }))));
+                        })(),
                         todaysSessions.length > 0 && (React.createElement("div", { style: { marginBottom: 20 } },
                             React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "TODAY'S SESSIONS"),
                             todaysSessions.map((s) => (React.createElement("div", { key: s.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #ECE7DE", fontSize: 12.5 } },
