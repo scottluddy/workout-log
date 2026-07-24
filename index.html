@@ -579,7 +579,7 @@ function buildAnalysisExport(activeProgram, entries) {
 // AI_TARGETS_ENABLED to false. Syncs through the same workout_logs table
 // as entries/programs (see stateRef.current, pullMerge, pushRemote) —
 // whole-object, dirty-flag gated, same pattern used for programs.
-const AI_TARGETS_ENABLED = true;
+const AI_TARGETS_ENABLED = false; // temporarily off while the design is being reworked — flip back to true to restore, nothing else needs to change
 const AI_TAG_COLORS = {
     push: { bg: "#FFE8E1", fg: "#C4441F", label: "PUSH" },
     hold: { bg: "#E3EEFF", fg: "#2C5FCC", label: "HOLD" },
@@ -667,6 +667,153 @@ const BASE_INPUT_STYLE = {
     textAlign: "center", fontSize: 16, fontWeight: 600, color: "#26221D",
     fontFamily: "inherit", fontVariantNumeric: "tabular-nums", padding: 0, margin: 0, outline: "none",
 };
+// ============================================================
+// CARDIO MODULE (start) — safe to delete entirely: remove this block, the
+// state/handlers/effects marked "CARDIO" in App(), the card on the
+// calendar page, the red-underline check in the calendar cell renderer,
+// and the page overlay, then flip FEATURE_CARDIO to false. Stored as new
+// keys inside the same synced blob as everything else (cardioSessions,
+// cardioUnlockedWeekKeys, cardioRevealedCount) — no new Supabase table.
+const FEATURE_CARDIO = true;
+const CARDIO_FLOOR_SEC = 300; // sessions under 5:00 earn zero credit
+const CARDIO_WEEK1_TARGET = 45;
+const CARDIO_WEEKLY_INCREMENT = 5;
+const CARDIO_TARGET_CAP = 110;
+const CARDIO_TOTAL_PROMPTS = 50;
+function cardioWeekStartKey(d) {
+    const dow = d.getDay();
+    return dateKey(addDays(d, -dow));
+}
+function cardioMultiplier(durationSec) {
+    if (durationSec < CARDIO_FLOOR_SEC)
+        return 0;
+    const min = durationSec / 60;
+    if (min < 10)
+        return 1.0;
+    if (min < 15)
+        return 1.1;
+    if (min < 20)
+        return 1.2;
+    if (min < 25)
+        return 1.3;
+    if (min < 30)
+        return 1.35;
+    return 1.4;
+}
+function cardioEffectiveMinutes(durationSec) {
+    const mult = cardioMultiplier(durationSec);
+    return mult === 0 ? 0 : (durationSec / 60) * mult;
+}
+function cardioRawMinutes(durationSec) {
+    return durationSec >= CARDIO_FLOOR_SEC ? durationSec / 60 : 0;
+}
+// Builds { weekKey -> {raw, effective} } across all logged sessions.
+function cardioWeeklyTotals(sessions) {
+    const byWeek = {};
+    (sessions || []).forEach((s) => {
+        const wk = cardioWeekStartKey(keyToDate(s.date));
+        if (!byWeek[wk])
+            byWeek[wk] = { raw: 0, effective: 0 };
+        byWeek[wk].raw += cardioRawMinutes(s.durationSec);
+        byWeek[wk].effective += cardioEffectiveMinutes(s.durationSec);
+    });
+    return byWeek;
+}
+// Walks every real calendar week from the first logged session through
+// today, applying the progression rule in order. Returns an ordered array
+// of { weekKey, target, effective, met }, so "current target" and "which
+// weeks already earned an unlock" are always derived fresh from the raw
+// session history rather than a separately-stored mutable value.
+function cardioWeekProgression(sessions) {
+    if (!sessions || !sessions.length)
+        return [];
+    const totals = cardioWeeklyTotals(sessions);
+    const firstDate = sessions.map((s) => s.date).sort()[0];
+    let cursor = keyToDate(cardioWeekStartKey(keyToDate(firstDate)));
+    const todayWeekStart = keyToDate(cardioWeekStartKey(new Date()));
+    const weeks = [];
+    let target = CARDIO_WEEK1_TARGET;
+    while (cursor <= todayWeekStart) {
+        const wk = dateKey(cursor);
+        const effective = (totals[wk] && totals[wk].effective) || 0;
+        const met = effective >= target;
+        weeks.push({ weekKey: wk, target, effective, met });
+        target = met ? Math.min(CARDIO_TARGET_CAP, target + CARDIO_WEEKLY_INCREMENT) : target;
+        cursor = addDays(cursor, 7);
+    }
+    return weeks;
+}
+// Hidden until unlocked — never rendered anywhere until its index is below
+// cardioRevealedCount. Unlocked sequentially, one per week the target is
+// met, stopping (not looping) once all 50 are revealed.
+const CARDIO_REWARD_PROMPTS = [
+    "Photorealistic portrait of a strikingly beautiful woman in her late 20s, dressed as a desert wanderer in flowing sun-bleached linen, mid-stride against a rippling dune at golden hour, wind catching the fabric, confident gaze directly at camera, shot on 85mm lens, shallow depth of field, warm rim lighting.",
+    "Photorealistic portrait of an elegant woman in her 30s in a tailored black trench coat, standing in a rain-slicked alley at night, neon light reflecting off wet pavement, hand raised to push hair back, moody cinematic lighting, sharp focus on her expression.",
+    "Photorealistic portrait of a graceful ballet dancer, mid-arabesque, dramatic single-source studio lighting against a pure black backdrop, muscles and posture emphasizing control and strength, fine art photography style.",
+    "Photorealistic portrait of a fierce, regal woman styled as a warrior queen, ornate armor with intricate detailing, windswept hair, stormy sky barely visible behind her, low-angle heroic composition, dramatic chiaroscuro lighting.",
+    "Photorealistic portrait of a vintage Hollywood glamour icon, 1950s styling, soft studio key light with classic Rembrandt shadow, sequined gown, a knowing half-smile, shot as if on film with subtle grain.",
+    "Photorealistic portrait of a striking equestrian in tailored riding attire, standing beside a horse in a misty paddock at dawn, confident posture, soft diffused morning light, medium telephoto lens compression.",
+    "Photorealistic portrait of a beautiful mountaineer at a windswept summit, technical gear dusted with frost, triumphant stance against a pale alpine sky, crisp high-altitude light, wide dynamic range.",
+    "Photorealistic portrait of a jazz singer mid-performance on a small stage, dramatic red-and-amber stage lighting, microphone in hand, eyes closed in the moment, motion-blurred background, sharp subject focus.",
+    "Photorealistic portrait of a beautiful woman styled as a space explorer, helmet held under one arm, dramatic key light suggesting a distant sun, reflective visor catching a glint, clean sci-fi realism.",
+    "Photorealistic portrait of a beekeeper in a golden wheat field at sunset, veil pushed back to reveal her face, soft backlight rimming her hair, calm and confident expression.",
+    "Photorealistic portrait of a falconer in the highlands, a hawk perched on her gloved arm, windswept hair, overcast dramatic sky, earthy tones, editorial outdoor photography style.",
+    "Photorealistic portrait of an archer at full draw, focused intensity in her eyes, autumn forest backdrop softly blurred, side lighting emphasizing muscle and form.",
+    "Photorealistic portrait of a woman in retro 1960s poolside styling, oversized sunglasses pushed up into her hair, vibrant saturated color, bright midday sun, playful confident expression.",
+    "Photorealistic portrait of a snow queen draped in white furs, standing in a quiet snowfall, pale cool lighting, breath visible in the cold air, serene regal expression.",
+    "Photorealistic portrait of a botanist among dense greenhouse foliage, dappled natural light filtering through leaves, gentle contemplative expression, soft green-toned color palette.",
+    "Photorealistic portrait of a woman in a leather motorcycle jacket, leaning against a vintage bike in golden hour light, confident smirk, warm desert highway backdrop softly blurred.",
+    "Photorealistic portrait of a head chef in a professional kitchen, steam rising in the background, sleeves rolled up, focused expression, warm tungsten kitchen lighting.",
+    "Photorealistic portrait of a violinist mid-performance on a concert stage, eyes closed in concentration, warm spotlight, elegant gown, dark blurred concert hall behind her.",
+    "Photorealistic portrait of a surfer at dawn, wetsuit half-zipped, board under one arm, ocean mist behind her, cool blue-gray morning light, windswept wet hair.",
+    "Photorealistic portrait of a blacksmith at her forge, glowing embers casting warm orange light across her face, focused determined expression, sparks faintly visible.",
+    "Photorealistic portrait of an archivist among towering shelves of old books, soft window light, dust motes visible in the air, thoughtful expression, warm sepia-toned palette.",
+    "Photorealistic portrait of a vintage aviator in leather flight jacket and goggles pushed up on her forehead, standing beside a propeller plane, golden hour rim light.",
+    "Photorealistic portrait of a diver emerging from calm turquoise water, droplets catching the light, confident direct gaze, bright natural sunlight, crisp clarity.",
+    "Photorealistic portrait of a painter in her studio, paint-streaked apron, palette in hand, soft north-facing window light, contemplative expression, canvases blurred behind her.",
+    "Photorealistic portrait of a mountain climber at a rocky summit ridge, rope coiled over one shoulder, triumphant windswept pose, dramatic golden backlighting.",
+    "Photorealistic portrait of a woman on a city rooftop at dusk, skyline lights softly blurred behind her, wind catching her coat, cool blue-violet twilight tones.",
+    "Photorealistic portrait of a vineyard worker at harvest time, basket of grapes in her arms, warm late-afternoon sun, dust particles glowing in the light, earthy natural tones.",
+    "Photorealistic portrait of a lighthouse keeper standing at the railing overlooking a stormy sea, coat whipping in the wind, dramatic moody gray-blue palette.",
+    "Photorealistic portrait of a fencer in a competition stance, foil raised, mesh mask held at her side revealing a focused expression, stark studio lighting, high contrast.",
+    "Photorealistic portrait of a woman on horseback riding through an autumn forest, fallen leaves swirling, warm amber light filtering through the canopy.",
+    "Photorealistic portrait of a woman by a crackling fireplace in a snowbound cabin, warm firelight on her face, cozy knit sweater, soft shallow depth of field.",
+    "Photorealistic portrait of a marathon runner crossing a finish line at sunrise, arms raised, genuine exuberant expression, warm backlight, motion-frozen clarity.",
+    "Photorealistic portrait of a sculptor in her studio, marble dust on her hands and forearms, focused expression, dramatic side lighting emphasizing texture and form.",
+    "Photorealistic portrait of an astronomer at a rooftop observatory at night, telescope beside her, starlight and city glow in the background, calm curious expression.",
+    "Photorealistic portrait of a perfumer surrounded by amber glass bottles, soft warm light, delicate focused expression as she examines a vial, rich golden tones.",
+    "Photorealistic portrait of a bookshop owner among towering stacks, warm lamp light, cardigan and glasses, gentle inviting expression, cozy shallow-focus background.",
+    "Photorealistic portrait of a cellist mid-performance, warm stage light catching the instrument's wood grain, deep concentration, elegant dark attire.",
+    "Photorealistic portrait of a flamenco dancer mid-turn, vibrant red dress in motion, dramatic warm stage lighting, powerful confident expression, motion blur in the fabric.",
+    "Photorealistic portrait of an ice skater on an outdoor rink at dusk, string lights glowing softly behind her, cold air visible in her breath, graceful mid-motion pose.",
+    "Photorealistic portrait of a gardener among blooming rose bushes, sunhat in one hand, soft natural light, warm relaxed smile, shallow depth of field on the flowers behind her.",
+    "Photorealistic portrait of a photographer with a vintage film camera raised, one eye through the viewfinder, dramatic side profile lighting, urban backdrop softly blurred.",
+    "Photorealistic portrait of a sailor on the deck of a ship, wind and salt spray in her hair, bright open ocean light, confident weathered expression, rope coiled nearby.",
+    "Photorealistic portrait of a calligrapher at her desk, brush poised over paper, warm focused lamp light, delicate concentration, ink and parchment textures visible.",
+    "Photorealistic portrait of a circus performer on a tightrope, arms outstretched for balance, dramatic spotlight against darkness, tense graceful poise.",
+    "Photorealistic portrait of a woman at a beach bonfire at night, firelight flickering warmly across her face, stars faintly visible above, relaxed contented expression.",
+    "Photorealistic portrait of a vintage race car driver leaning against a classic roadster, leather driving gloves, windswept hair, warm afternoon sun, confident smile.",
+    "Photorealistic portrait in the style of a perfume advertisement, close crop, dramatic single-source lighting, glossy elegant styling, direct captivating gaze.",
+    "Photorealistic portrait lit like a Renaissance oil painting, warm chiaroscuro lighting, rich velvet fabric, timeless composed expression, deep shadow and golden highlight.",
+    "Photorealistic portrait of a woman in yoga pose at sunrise on a quiet beach, soft pastel morning light, serene focused expression, minimal warm color palette.",
+    "Photorealistic portrait of a glassblower at her furnace, molten glass glowing orange, intense focused expression, sparks of warm light reflecting off her face.",
+];
+// Given the full progression, returns how many weeks have newly met
+// target since the last time we checked (cardioUnlockedWeekKeys), so an
+// unlock only ever fires once per week regardless of when this runs.
+function cardioComputeNewUnlocks(sessions, alreadyUnlockedWeekKeys) {
+    const weeks = cardioWeekProgression(sessions);
+    const already = new Set(alreadyUnlockedWeekKeys || []);
+    const newlyMet = weeks.filter((w) => w.met && !already.has(w.weekKey)).map((w) => w.weekKey);
+    return { weeks, newlyMet };
+}
+function cardioFormatDuration(sec) {
+    const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+    return `${m}:${pad2(s)}`;
+}
+// ============================================================
+// CARDIO MODULE (end)
+// ============================================================
 function Input({ value, onChange, fs }) {
     return (React.createElement("input", { className: "wl-input", type: "text", inputMode: "decimal", placeholder: "", value: value || "", onChange: onChange, style: fs ? { ...BASE_INPUT_STYLE, fontSize: fs } : BASE_INPUT_STYLE }));
 }
@@ -699,6 +846,17 @@ function App() {
     const [aiDeckIndex, setAiDeckIndex] = useState(0);
     const aiDeckRef = useRef(null);
     // ---- AI WEEKLY TARGETS state (end) ----
+    // ---- CARDIO state (start) ----
+    const [cardioSessions, setCardioSessions] = useState([]); // [{id, date, startTime, endTime, durationSec}]
+    const [cardioUnlockedWeekKeys, setCardioUnlockedWeekKeys] = useState([]);
+    const [cardioRevealedCount, setCardioRevealedCount] = useState(0);
+    const [cardioView, setCardioView] = useState(null); // null | "main"
+    const [cardioSwRunning, setCardioSwRunning] = useState(false);
+    const [cardioSwStartedAt, setCardioSwStartedAt] = useState(null);
+    const [cardioSwAccumulatedMs, setCardioSwAccumulatedMs] = useState(0);
+    const [cardioSwTick, setCardioSwTick] = useState(0);
+    const cardioDirtyRef = useRef(false);
+    // ---- CARDIO state (end) ----
     const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
@@ -735,7 +893,7 @@ function App() {
     const dirtyRef = useRef(new Set());
     const programsDirtyRef = useRef(false);
     const stateRef = useRef({ entries, programs, currentProgramId });
-    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets };
+    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioUnlockedWeekKeys, cardioRevealedCount };
     const migratedRef = useRef(false);
     // ---- BODY COMPOSITION refs (start) ----
     const bcStateRef = useRef({ entries: {}, blocks: [] });
@@ -767,6 +925,12 @@ function App() {
                     if (check.ok)
                         setAiTargets(check.data);
                 }
+                if (Array.isArray(d.cardioSessions))
+                    setCardioSessions(d.cardioSessions);
+                if (Array.isArray(d.cardioUnlockedWeekKeys))
+                    setCardioUnlockedWeekKeys(d.cardioUnlockedWeekKeys);
+                if (typeof d.cardioRevealedCount === "number")
+                    setCardioRevealedCount(d.cardioRevealedCount);
             }
         }
         catch (e) { }
@@ -909,6 +1073,7 @@ function App() {
         const pushedKeys = new Set(dirtyRef.current);
         const wasProgramsDirty = programsDirtyRef.current;
         const wasAiTargetsDirty = aiTargetsDirtyRef.current;
+        const wasCardioDirty = cardioDirtyRef.current;
         try {
             const { error } = await supa.from("workout_logs").upsert({ user_id: uid, data: stateRef.current, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
             if (error) {
@@ -921,6 +1086,8 @@ function App() {
                     programsDirtyRef.current = false;
                 if (wasAiTargetsDirty)
                     aiTargetsDirtyRef.current = false;
+                if (wasCardioDirty)
+                    cardioDirtyRef.current = false;
                 setSyncStatus("Synced ✓");
                 setSyncOk(true);
             }
@@ -995,6 +1162,26 @@ function App() {
                         const check = validateWeeklyTargets(remote.aiTargets);
                         if (check.ok)
                             setAiTargets(check.data);
+                    }
+                }
+                // Cardio: sessions union by id (never lose one logged on another
+                // device), unlocked-week keys union (monotonic, like the program
+                // deletion tombstones), revealed count takes the max (it only
+                // ever counts up, never down).
+                if (!cardioDirtyRef.current) {
+                    if (Array.isArray(remote.cardioSessions)) {
+                        const localSessions = stateRef.current.cardioSessions || [];
+                        const merged = remote.cardioSessions.slice();
+                        localSessions.forEach((ls) => { if (!merged.find((rs) => rs.id === ls.id))
+                            merged.push(ls); });
+                        setCardioSessions(merged);
+                    }
+                    if (Array.isArray(remote.cardioUnlockedWeekKeys)) {
+                        const localKeys = stateRef.current.cardioUnlockedWeekKeys || [];
+                        setCardioUnlockedWeekKeys(Array.from(new Set([...localKeys, ...remote.cardioUnlockedWeekKeys])));
+                    }
+                    if (typeof remote.cardioRevealedCount === "number") {
+                        setCardioRevealedCount((cur) => Math.max(cur, remote.cardioRevealedCount));
                     }
                 }
                 setTimeout(() => { persistLocal(); pullingRef.current = false; pushRemote(); }, 0);
@@ -1074,7 +1261,7 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioUnlockedWeekKeys, cardioRevealedCount, persistLocal, schedulePush]);
     const C = colors(ACCENT);
     const activeProgram = getActiveProgram(currentProgramId, programs);
     // ---- STOPWATCH effects + handlers (start) ----
@@ -1361,6 +1548,68 @@ function App() {
         setAiImportOk(true);
     };
     // ---- AI WEEKLY TARGETS handlers (end) ----
+    // ---- CARDIO handlers + effects (start) ----
+    // Stopwatch state is local-only (per device), same reasoning as the
+    // workout stopwatch — not meaningful to sync, and computed from a real
+    // timestamp so it's accurate even after the app is backgrounded.
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem("cardioStopwatch");
+            if (raw) {
+                const d = JSON.parse(raw);
+                setCardioSwRunning(!!d.running);
+                setCardioSwStartedAt(d.startedAt || null);
+                setCardioSwAccumulatedMs(d.accumulatedMs || 0);
+            }
+        }
+        catch (e) { }
+    }, []);
+    const cardioSwSkipFirstRef = useRef(true);
+    useEffect(() => {
+        if (cardioSwSkipFirstRef.current) {
+            cardioSwSkipFirstRef.current = false;
+            return;
+        }
+        try {
+            localStorage.setItem("cardioStopwatch", JSON.stringify({ running: cardioSwRunning, startedAt: cardioSwStartedAt, accumulatedMs: cardioSwAccumulatedMs }));
+        }
+        catch (e) { }
+    }, [cardioSwRunning, cardioSwStartedAt, cardioSwAccumulatedMs]);
+    useEffect(() => {
+        if (!cardioSwRunning)
+            return;
+        const id = setInterval(() => setCardioSwTick((t) => t + 1), 1000);
+        return () => clearInterval(id);
+    }, [cardioSwRunning]);
+    const cardioSwElapsedMs = cardioSwAccumulatedMs + (cardioSwRunning && cardioSwStartedAt ? Date.now() - cardioSwStartedAt : 0);
+    const cardioSwStart = () => { setCardioSwStartedAt(Date.now()); setCardioSwRunning(true); };
+    const cardioSwCancel = () => { setCardioSwRunning(false); setCardioSwStartedAt(null); setCardioSwAccumulatedMs(0); };
+    const cardioSwStop = () => {
+        if (!cardioSwRunning || !cardioSwStartedAt)
+            return;
+        const endMs = Date.now();
+        const startMs = endMs - cardioSwElapsedMs;
+        const durationSec = Math.round(cardioSwElapsedMs / 1000);
+        const session = { id: "cs_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8), date: dateKey(new Date(startMs)), startTime: new Date(startMs).toISOString(), endTime: new Date(endMs).toISOString(), durationSec };
+        cardioDirtyRef.current = true;
+        setCardioSessions((cur) => [...cur, session]);
+        setCardioSwRunning(false);
+        setCardioSwStartedAt(null);
+        setCardioSwAccumulatedMs(0);
+    };
+    // Detect newly-earned unlocks whenever sessions change, reveal one
+    // prompt per newly-met week (in order, stopping at the end of the list).
+    useEffect(() => {
+        if (!FEATURE_CARDIO || !cardioSessions.length)
+            return;
+        const { newlyMet } = cardioComputeNewUnlocks(cardioSessions, cardioUnlockedWeekKeys);
+        if (newlyMet.length) {
+            cardioDirtyRef.current = true;
+            setCardioUnlockedWeekKeys((cur) => Array.from(new Set([...cur, ...newlyMet])));
+            setCardioRevealedCount((cur) => Math.min(CARDIO_TOTAL_PROMPTS, cur + newlyMet.length));
+        }
+    }, [cardioSessions]);
+    // ---- CARDIO handlers + effects (end) ----
     // ---- My Programs ----
     const selectProgram = (id) => {
         currentProgramId !== id && (programsDirtyRef.current = true);
@@ -1936,6 +2185,7 @@ function App() {
                     }
                     const logged = cell.inMonth && dayHasReps(entries, activeProgram, cell.date);
                     const disabled = !cell.inMonth || restDay;
+                    const hasCardio = FEATURE_CARDIO && cell.inMonth && cardioSessions.some((s) => s.date === dateKey(cell.date) && s.durationSec >= CARDIO_FLOOR_SEC);
                     let bg = "transparent", fg = cell.inMonth ? C.ink : "#D8D2C6", ring = null;
                     if (logged) {
                         bg = REP_COLOR_BG.green;
@@ -1945,7 +2195,7 @@ function App() {
                     else if (restDay) {
                         fg = "#D8D2C6";
                     }
-                    return (React.createElement("div", { key: ci, style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 0" } },
+                    return (React.createElement("div", { key: ci, style: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 0" } },
                         React.createElement("div", { style: {
                                 width: 42, height: 42, borderRadius: 10, boxSizing: "border-box",
                                 border: isToday && cell.inMonth ? `2.5px solid ${TODAY_BLUE}` : "none",
@@ -1956,7 +2206,8 @@ function App() {
                                     background: bg,
                                     border: ring ? `2px solid ${ring}` : "none",
                                     color: fg, fontSize: 14, fontWeight: isToday ? 800 : 600,
-                                } }, cell.date.getDate()))));
+                                } }, cell.date.getDate())),
+                        hasCardio && (React.createElement("div", { style: { position: "absolute", bottom: 2, left: "50%", transform: "translateX(-50%)", width: 18, height: 2.5, borderRadius: 2, background: "#D9645C" } }))));
                 })))),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 20, marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.line}` } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
@@ -1964,7 +2215,10 @@ function App() {
                         React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Today")),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                         React.createElement("div", { style: { width: 12, height: 12, borderRadius: "50%", background: REP_COLOR_BG.green, border: "2px solid #2FAE66" } }),
-                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Logged workout"))),
+                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Logged workout")),
+                    FEATURE_CARDIO && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                        React.createElement("div", { style: { width: 14, height: 2.5, borderRadius: 2, background: "#D9645C" } }),
+                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Cardio")))),
                 BODY_COMP_ENABLED && (React.createElement("div", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 16, padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#fff", cursor: "pointer" } },
                     React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 6 } }, "BODY COMPOSITION"),
                     (() => {
@@ -1985,6 +2239,22 @@ function App() {
                                 le.bf ? `, ${le.bf}% BF` : ""),
                             React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 3 } }, "Weekly weigh-ins \u00B7 tap to open")));
                     })())),
+                FEATURE_CARDIO && (() => {
+                    const progression = cardioWeekProgression(cardioSessions);
+                    const thisWeek = progression.length ? progression[progression.length - 1] : { target: CARDIO_WEEK1_TARGET, effective: 0 };
+                    const pct = Math.max(0, Math.min(100, Math.round((thisWeek.effective / thisWeek.target) * 100)));
+                    return (React.createElement("div", { onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { marginTop: 12, padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#fff", cursor: "pointer" } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, marginBottom: 6 } },
+                            React.createElement("span", { style: { fontSize: 15 } }, "\uD83C\uDFC3"),
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "CARDIO")),
+                        React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 9 } },
+                            Math.round(thisWeek.effective),
+                            " / ",
+                            thisWeek.target,
+                            " min this week"),
+                        React.createElement("div", { style: { height: 6, background: "#F1EDE6", borderRadius: 3, overflow: "hidden" } },
+                            React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: "#D9645C", borderRadius: 3 } }))));
+                })(),
                 ANALYSIS_EXPORT_ENABLED && (React.createElement("button", { onClick: () => { setAxCopyStatus(""); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Analyze with AI")))),
             menuOpen && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
@@ -2212,7 +2482,78 @@ function App() {
                             aiTargets && (React.createElement("button", { onClick: clearAiTargets, style: { padding: "11px 14px", border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Clear"))),
                         React.createElement("textarea", { value: aiImportText, onChange: (e) => setAiImportText(e.target.value), placeholder: "\u2026or paste the weekly-targets JSON here", style: { width: "100%", boxSizing: "border-box", height: 90, border: "1px solid #E7E1D7", borderRadius: 11, padding: 10, fontFamily: "ui-monospace, monospace", fontSize: 12, color: "#26221D", resize: "none", marginBottom: 8 } }),
                         React.createElement("button", { onClick: () => aiImportFromText(aiImportText), style: { width: "100%", padding: 11, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Import pasted JSON"),
-                        React.createElement("div", { style: { minHeight: aiImportStatus ? 18 : 0, marginTop: 10, fontSize: 12, fontWeight: 700, textAlign: "center", color: aiImportOk ? "#1F8A5B" : "#C0392B" } }, aiImportStatus)))))))));
+                        React.createElement("div", { style: { minHeight: aiImportStatus ? 18 : 0, marginTop: 10, fontSize: 12, fontWeight: 700, textAlign: "center", color: aiImportOk ? "#1F8A5B" : "#C0392B" } }, aiImportStatus)))))),
+            FEATURE_CARDIO && cardioView === "main" && (() => {
+                const progression = cardioWeekProgression(cardioSessions);
+                const thisWeek = progression.length ? progression[progression.length - 1] : { target: CARDIO_WEEK1_TARGET, effective: 0, met: false };
+                const totals = cardioWeeklyTotals(cardioSessions);
+                const thisWeekKey = cardioWeekStartKey(new Date());
+                const rawThisWeek = (totals[thisWeekKey] && totals[thisWeekKey].raw) || 0;
+                const nextTarget = thisWeek.met ? Math.min(CARDIO_TARGET_CAP, thisWeek.target + CARDIO_WEEKLY_INCREMENT) : thisWeek.target;
+                const todayKeyStr = dateKey(new Date());
+                const todaysSessions = cardioSessions.filter((s) => s.date === todayKeyStr).sort((a, b) => a.startTime.localeCompare(b.startTime));
+                const copyPrompt = (text) => {
+                    try {
+                        if (navigator.clipboard && navigator.clipboard.writeText)
+                            navigator.clipboard.writeText(text);
+                    }
+                    catch (e) { }
+                };
+                return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 33, background: "#fff", display: "flex", flexDirection: "column" } },
+                    React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                        React.createElement("button", { onClick: () => setCardioView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Cardio"),
+                        React.createElement("div", { style: { width: 66 } })),
+                    React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
+                        React.createElement("div", { style: { padding: 20, border: "1px solid #E7E1D7", borderRadius: 14, background: "#FDF6F5", textAlign: "center", marginBottom: 16 } },
+                            React.createElement("div", { style: { fontSize: 40, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums", marginBottom: 14 } }, formatStopwatch(cardioSwElapsedMs)),
+                            React.createElement("div", { style: { display: "flex", gap: 8 } },
+                                !cardioSwRunning ? (React.createElement("button", { onClick: cardioSwStart, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: "#D9645C", color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Start")) : (React.createElement("button", { onClick: cardioSwStop, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: "#5E574C", color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Stop & Log")),
+                                cardioSwRunning && (React.createElement("button", { onClick: cardioSwCancel, style: { padding: "12px 16px", border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Cancel"))),
+                            cardioSwElapsedMs > 0 && cardioSwElapsedMs < CARDIO_FLOOR_SEC * 1000 && (React.createElement("div", { style: { fontSize: 11.5, color: "#96721F", marginTop: 10 } }, "Sessions under 5:00 won't count toward your weekly total."))),
+                        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 } },
+                            React.createElement("div", { style: { padding: 12, border: "1px solid #E7E1D7", borderRadius: 12, textAlign: "center" } },
+                                React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, letterSpacing: ".04em", color: C.muted, marginBottom: 4 } }, "RAW THIS WEEK"),
+                                React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink } },
+                                    Math.round(rawThisWeek),
+                                    " min")),
+                            React.createElement("div", { style: { padding: 12, border: "1px solid #E7E1D7", borderRadius: 12, textAlign: "center" } },
+                                React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, letterSpacing: ".04em", color: C.muted, marginBottom: 4 } }, "EFFECTIVE THIS WEEK"),
+                                React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink } },
+                                    Math.round(thisWeek.effective),
+                                    " min")),
+                            React.createElement("div", { style: { padding: 12, border: "1px solid #E7E1D7", borderRadius: 12, textAlign: "center" } },
+                                React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, letterSpacing: ".04em", color: C.muted, marginBottom: 4 } }, "CURRENT TARGET"),
+                                React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink } },
+                                    thisWeek.target,
+                                    " min")),
+                            React.createElement("div", { style: { padding: 12, border: "1px solid #E7E1D7", borderRadius: 12, textAlign: "center" } },
+                                React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, letterSpacing: ".04em", color: C.muted, marginBottom: 4 } }, "NEXT WEEK IF HIT"),
+                                React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink } },
+                                    nextTarget,
+                                    " min"))),
+                        todaysSessions.length > 0 && (React.createElement("div", { style: { marginBottom: 20 } },
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "TODAY'S SESSIONS"),
+                            todaysSessions.map((s) => (React.createElement("div", { key: s.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #ECE7DE", fontSize: 12.5 } },
+                                React.createElement("div", { style: { color: C.ink, fontWeight: 600 } }, cardioFormatDuration(s.durationSec)),
+                                React.createElement("div", { style: { color: C.muted } }, s.durationSec >= CARDIO_FLOOR_SEC ? `${bcFormatWeight(cardioEffectiveMinutes(s.durationSec))} eff. min` : "below 5:00 — no credit")))))),
+                        cardioRevealedCount > 0 && (React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } },
+                                "UNLOCKED (",
+                                cardioRevealedCount,
+                                " OF ",
+                                CARDIO_TOTAL_PROMPTS,
+                                ")"),
+                            CARDIO_REWARD_PROMPTS.slice(0, cardioRevealedCount).slice().reverse().map((p, idx) => {
+                                const realIndex = cardioRevealedCount - idx;
+                                return (React.createElement("div", { key: realIndex, style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: 12, marginBottom: 8 } },
+                                    React.createElement("div", { style: { fontSize: 10, fontWeight: 700, color: C.muted, marginBottom: 6 } },
+                                        "#",
+                                        realIndex),
+                                    React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.4, color: C.ink, marginBottom: 8 } }, p),
+                                    React.createElement("button", { onClick: () => copyPrompt(p), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 8, padding: "6px 12px", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "Copy")));
+                            }))))));
+            })())));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
 
