@@ -2489,7 +2489,7 @@ function App() {
                 const totals = cardioWeeklyTotals(cardioSessions);
                 const thisWeekKey = cardioWeekStartKey(new Date());
                 const rawThisWeek = (totals[thisWeekKey] && totals[thisWeekKey].raw) || 0;
-                const nextTarget = thisWeek.met ? Math.min(CARDIO_TARGET_CAP, thisWeek.target + CARDIO_WEEKLY_INCREMENT) : thisWeek.target;
+                const nextTarget = Math.min(CARDIO_TARGET_CAP, thisWeek.target + CARDIO_WEEKLY_INCREMENT);
                 const todayKeyStr = dateKey(new Date());
                 const todaysSessions = cardioSessions.filter((s) => s.date === todayKeyStr).sort((a, b) => a.startTime.localeCompare(b.startTime));
                 const copyPrompt = (text) => {
