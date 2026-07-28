@@ -814,6 +814,30 @@ function cardioFormatDuration(sec) {
 // ============================================================
 // CARDIO MODULE (end)
 // ============================================================
+// Reusable "current / target" progress bar — approved design (big bold
+// number + percentage, thin bold-filled bar underneath), used anywhere in
+// the app that needs to show progress toward a target. Auto-switches to
+// green once the target is met/exceeded, same "met = green" language used
+// elsewhere (calendar, color-coding module), and caps the bar's visual
+// fill at 100% even if the actual value goes higher, so it never overflows.
+function ProgressBarRow({ current, target, unit, color }) {
+    const safeTarget = target > 0 ? target : 1;
+    const pct = Math.max(0, Math.min(100, Math.round((current / safeTarget) * 100)));
+    const met = current >= target;
+    const barColor = met ? "#2FAE66" : (color || "#D9645C");
+    return (React.createElement("div", null,
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 } },
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 800, color: "#26221D" } },
+                Math.round(current),
+                " / ",
+                Math.round(target),
+                unit ? ` ${unit}` : ""),
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: barColor } },
+                pct,
+                "%")),
+        React.createElement("div", { style: { height: 10, background: "#F1EDE6", borderRadius: 5, overflow: "hidden" } },
+            React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: barColor, borderRadius: 5 } }))));
+}
 function Input({ value, onChange, fs }) {
     return (React.createElement("input", { className: "wl-input", type: "text", inputMode: "decimal", placeholder: "", value: value || "", onChange: onChange, style: fs ? { ...BASE_INPUT_STYLE, fontSize: fs } : BASE_INPUT_STYLE }));
 }
@@ -863,6 +887,7 @@ function App() {
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
     const [vw, setVw] = useState(390);
     const [menuOpen, setMenuOpen] = useState(false);
+    const [accountSubView, setAccountSubView] = useState(null); // null | "programs" | "sync" | "backup"
     const [restoreText, setRestoreText] = useState("");
     const [status, setStatus] = useState("");
     const [statusOk, setStatusOk] = useState(true);
@@ -2168,7 +2193,7 @@ function App() {
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".14em", color: "#A79F93", marginBottom: 3 } }, "WORKOUT LOG"),
                         React.createElement("div", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "-.01em", color: "#26221D", lineHeight: 1 } }, activeProgram.name)),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexShrink: 0 } },
-                        React.createElement("button", { onClick: () => { setMenuOpen(true); setStatus(""); setRestoreText(""); setProgramStatus(""); }, title: "Account", style: { width: 34, height: 34, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, color: "#5E574C", fontSize: 19, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u22EF"))),
+                        React.createElement("button", { onClick: () => { setMenuOpen(true); setAccountSubView(null); setStatus(""); setRestoreText(""); setProgramStatus(""); }, title: "Account", style: { width: 34, height: 34, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, color: "#5E574C", fontSize: 19, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u22EF"))),
                 focusedDate ? (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 14 } },
                     React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: "#26221D", textAlign: "center" } }, focusedTitle),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8 } },
@@ -2234,49 +2259,29 @@ function App() {
                     FEATURE_CARDIO && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                         React.createElement("div", { style: { width: 14, height: 2.5, borderRadius: 2, background: "#D9645C" } }),
                         React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Cardio")))),
-                BODY_COMP_ENABLED && (React.createElement("div", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 16, padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#fff", cursor: "pointer" } },
-                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 6 } }, "BODY COMPOSITION"),
-                    (() => {
-                        const dates = Object.keys(bcEntries).filter((dk) => bcEntries[dk] && (bcEntries[dk].actualWeight || bcEntries[dk].bf)).sort();
-                        const latest = dates[dates.length - 1];
-                        if (!latest) {
-                            return React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.ink } }, "No entries yet \u00B7 tap to start");
-                        }
-                        const le = bcEntries[latest];
-                        const ld = keyToDate(latest);
-                        return (React.createElement("div", null,
-                            React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: C.ink } },
-                                MONTH_NAMES[ld.getMonth()].slice(0, 3),
-                                " ",
-                                ld.getDate(),
-                                " \u2014 ",
-                                le.actualWeight || "—",
-                                le.bf ? `, ${le.bf}% BF` : ""),
-                            React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 3 } }, "Weekly weigh-ins \u00B7 tap to open")));
-                    })())),
-                FEATURE_CARDIO && (() => {
-                    const progression = cardioWeekProgression(cardioSessions);
-                    const thisWeek = progression.length ? progression[progression.length - 1] : { target: CARDIO_WEEK1_TARGET, effective: 0 };
-                    const pct = Math.max(0, Math.min(100, Math.round((thisWeek.effective / thisWeek.target) * 100)));
-                    return (React.createElement("div", { onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { marginTop: 12, padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#fff", cursor: "pointer" } },
-                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, marginBottom: 6 } },
-                            React.createElement("span", { style: { fontSize: 15 } }, "\uD83C\uDFC3"),
-                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "CARDIO")),
-                        React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 9 } },
-                            Math.round(thisWeek.effective),
-                            " / ",
-                            thisWeek.target,
-                            " min this week"),
-                        React.createElement("div", { style: { height: 6, background: "#F1EDE6", borderRadius: 3, overflow: "hidden" } },
-                            React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: "#D9645C", borderRadius: 3 } }))));
-                })(),
+                BODY_COMP_ENABLED && (React.createElement("button", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 16, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Body Composition")),
+                FEATURE_CARDIO && (React.createElement("button", { onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Cardio")),
                 ANALYSIS_EXPORT_ENABLED && (React.createElement("button", { onClick: () => { setAxCopyStatus(""); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Analyze with AI")))),
-            menuOpen && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
+            menuOpen && !accountSubView && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
-                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 } },
                         React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#26221D" } }, "Account"),
                         React.createElement("button", { onClick: () => setMenuOpen(false), style: { width: 30, height: 30, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
-                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", margin: "18px 0 8px" } }, "MY PROGRAMS"),
+                    [
+                        { key: "programs", title: "My Programs", subtitle: activeProgram.name },
+                        { key: "sync", title: "Account & Sync", subtitle: user ? user.email : "Not signed in" },
+                        { key: "backup", title: "Backup & Restore", subtitle: "Export or restore your data" },
+                    ].map((row, i) => (React.createElement("button", { key: row.key, onClick: () => { setAccountSubView(row.key); setStatus(""); setRestoreText(""); setProgramStatus(""); }, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 4px", border: "none", borderTop: i === 0 ? "none" : "1px solid #ECE7DE", background: "transparent", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
+                        React.createElement("div", { style: { minWidth: 0 } },
+                            React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, color: C.ink } }, row.title),
+                            React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, row.subtitle)),
+                        React.createElement("span", { style: { color: C.muted, fontSize: 18, flexShrink: 0, marginLeft: 10 } }, "\u203A"))))))),
+            menuOpen && accountSubView === "programs" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
+                React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                    React.createElement("button", { onClick: () => setAccountSubView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "My Programs"),
+                    React.createElement("button", { onClick: () => { setMenuOpen(false); setAccountSubView(null); }, style: { width: 34, height: 34, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+                React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, overflow: "hidden", marginBottom: 10 } },
                         React.createElement("button", { onClick: () => selectProgram(BUILTIN_ID), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "none", borderBottom: "1px solid #ECE7DE", background: currentProgramId === BUILTIN_ID ? "#FFF3EE" : "#fff", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
                             React.createElement("div", null,
@@ -2299,8 +2304,13 @@ function App() {
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
                         React.createElement("a", { href: "Weekly_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Weekly template"),
                         React.createElement("a", { href: "Custom_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Custom template")),
-                    React.createElement("div", { style: { minHeight: programStatus ? 18 : 0, marginBottom: programStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: programStatusOk ? "#1F8A5B" : "#C0392B" } }, programStatus),
-                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", margin: "8px 0 8px" } }, "ACCOUNT & SYNC"),
+                    React.createElement("div", { style: { minHeight: programStatus ? 18 : 0, marginBottom: programStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: programStatusOk ? "#1F8A5B" : "#C0392B" } }, programStatus)))),
+            menuOpen && accountSubView === "sync" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
+                React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                    React.createElement("button", { onClick: () => setAccountSubView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Account & Sync"),
+                    React.createElement("button", { onClick: () => { setMenuOpen(false); setAccountSubView(null); }, style: { width: 34, height: 34, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+                React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     user ? (React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: "12px 14px", marginBottom: 18 } },
                         React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 } },
                             React.createElement("div", { style: { minWidth: 0 } },
@@ -2314,7 +2324,13 @@ function App() {
                         React.createElement("div", { style: { display: "flex", gap: 8 } },
                             React.createElement("button", { onClick: signIn, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Sign in"),
                             React.createElement("button", { onClick: signUp, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Create account")))),
-                    React.createElement("div", { style: { minHeight: syncStatus ? 18 : 0, marginBottom: syncStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: syncOk ? "#1F8A5B" : "#C0392B" } }, syncStatus),
+                    React.createElement("div", { style: { minHeight: syncStatus ? 18 : 0, marginBottom: syncStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: syncOk ? "#1F8A5B" : "#C0392B" } }, syncStatus)))),
+            menuOpen && accountSubView === "backup" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
+                React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                    React.createElement("button", { onClick: () => setAccountSubView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Backup & Restore"),
+                    React.createElement("button", { onClick: () => { setMenuOpen(false); setAccountSubView(null); }, style: { width: 34, height: 34, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+                React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "BACK UP"),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 18 } },
                         React.createElement("button", { onClick: doDownload, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Download file"),
@@ -2546,28 +2562,9 @@ function App() {
                                 React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink } },
                                     nextTarget,
                                     " min"))),
-                        progression.length > 0 && (() => {
-                            const recentWeeks = progression.slice(-10);
-                            const maxVal = Math.max(...recentWeeks.map((w) => Math.max(w.effective, w.target)), 1);
-                            const CHART_H = 100;
-                            return (React.createElement("div", { style: { marginBottom: 20 } },
-                                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 4 } }, "WEEKLY EFFECTIVE MINUTES"),
-                                React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 10 } }, "Green = target met that week"),
-                                React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 6, height: CHART_H, padding: "0 2px" } }, recentWeeks.map((w) => {
-                                    const barH = Math.max(3, Math.round((w.effective / maxVal) * CHART_H));
-                                    const wd = keyToDate(w.weekKey);
-                                    return (React.createElement("div", { key: w.weekKey, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" } },
-                                        React.createElement("div", { style: { fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 } }, Math.round(w.effective)),
-                                        React.createElement("div", { style: { width: "100%", maxWidth: 26, height: barH, borderRadius: "4px 4px 2px 2px", background: w.met ? "#2FAE66" : "#E7E1D7" } })));
-                                })),
-                                React.createElement("div", { style: { display: "flex", gap: 6, padding: "6px 2px 0" } }, recentWeeks.map((w) => {
-                                    const wd = keyToDate(w.weekKey);
-                                    return (React.createElement("div", { key: w.weekKey, style: { flex: 1, textAlign: "center", fontSize: 9, fontWeight: 600, color: C.muted } },
-                                        MONTH_NAMES[wd.getMonth()].slice(0, 3),
-                                        " ",
-                                        wd.getDate()));
-                                }))));
-                        })(),
+                        progression.length > 0 && (React.createElement("div", { style: { marginBottom: 20, padding: 16, border: "1px solid #E7E1D7", borderRadius: 14 } },
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 10 } }, "THIS WEEK'S PROGRESS"),
+                            React.createElement(ProgressBarRow, { current: thisWeek.effective, target: thisWeek.target, unit: "min", color: "#D9645C" }))),
                         thisWeekSessions.length > 0 && (React.createElement("div", { style: { marginBottom: 20 } },
                             React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "THIS WEEK'S SESSIONS"),
                             thisWeekSessions.map((s) => {
