@@ -260,6 +260,45 @@ function getActiveProgram(currentProgramId, programs) {
     const p = (programs || []).find((pp) => pp.id === currentProgramId);
     return p || builtinProgram();
 }
+// ============================================================
+// PROGRAM BLOCKS MODULE (start) — safe to delete entirely: remove this
+// block, the state/handlers/effects marked "PROGRAM BLOCKS" in App(), the
+// blocks-management screen, the "Program Schedule" entry in My Programs,
+// and revert the calendar cell loop / openWorkout / header title to use
+// the single `activeProgram` (derived straight from currentProgramId)
+// the way they did before this feature, then flip PROGRAM_BLOCKS_ENABLED
+// to false. Mirrors the Body Composition Blocks pattern: date ranges,
+// each assigned to one program instead of a bulk/cut/maintenance type.
+// A block with endDate === null is "open-ended" — runs until the next
+// Switch Program action closes it. Only one block is ever open-ended at
+// a time; Master Calendar resolves, for any date, which program governs
+// it by finding the covering block (gap = rest day, same semantics as
+// Body Comp Block gaps).
+const PROGRAM_BLOCKS_ENABLED = true;
+function pbOverlaps(aStart, aEnd, bStart, bEnd) {
+    const aE = aEnd || "9999-12-31";
+    const bE = bEnd || "9999-12-31";
+    return aStart <= bE && bStart <= aE;
+}
+function resolveProgramIdForDate(programBlocks, dk) {
+    const block = (programBlocks || []).find((b) => dk >= b.startDate && (!b.endDate || dk <= b.endDate));
+    return block ? block.programId : null;
+}
+function resolveProgramForDate(programBlocks, programs, d) {
+    const pid = resolveProgramIdForDate(programBlocks, dateKey(d));
+    if (pid === null)
+        return null;
+    return getActiveProgram(pid, programs);
+}
+function pbProgramName(programs, pid) {
+    if (pid === BUILTIN_ID)
+        return SPLITS[0].title;
+    const p = (programs || []).find((pp) => pp.id === pid);
+    return p ? p.name : "(deleted program)";
+}
+// ============================================================
+// PROGRAM BLOCKS MODULE (end)
+// ============================================================
 function exercisesForDate(program, entries, d) {
     if (program.kind === "weekly") {
         const day = program.days.find((x) => x.dow === d.getDay());
@@ -882,6 +921,20 @@ function App() {
     const [cardioSwTick, setCardioSwTick] = useState(0);
     const cardioDirtyRef = useRef(false);
     // ---- CARDIO state (end) ----
+    // ---- PROGRAM BLOCKS state (start) ----
+    const [programBlocks, setProgramBlocks] = useState([]); // [{id, programId, startDate, endDate|null}]
+    const [deletedProgramBlockIds, setDeletedProgramBlockIds] = useState([]); // tombstones
+    const [pbView, setPbView] = useState(null); // null | "manage"
+    const [pbSwitchProgramId, setPbSwitchProgramId] = useState(BUILTIN_ID);
+    const [pbSwitchStartDate, setPbSwitchStartDate] = useState("");
+    const [pbHistProgramId, setPbHistProgramId] = useState(BUILTIN_ID);
+    const [pbHistStart, setPbHistStart] = useState("");
+    const [pbHistEnd, setPbHistEnd] = useState("");
+    const [pbError, setPbError] = useState("");
+    const [pbHistoryProgramId, setPbHistoryProgramId] = useState(null); // which program's standalone history calendar is open, if any
+    const [pbHistoryMonth, setPbHistoryMonth] = useState(null); // Date | null — month shown in that history calendar
+    const programBlocksDirtyRef = useRef(false);
+    // ---- PROGRAM BLOCKS state (end) ----
     const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
@@ -919,7 +972,7 @@ function App() {
     const dirtyRef = useRef(new Set());
     const programsDirtyRef = useRef(false);
     const stateRef = useRef({ entries, programs, currentProgramId });
-    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount };
+    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds };
     const migratedRef = useRef(false);
     // ---- BODY COMPOSITION refs (start) ----
     const bcStateRef = useRef({ entries: {}, blocks: [] });
@@ -959,6 +1012,10 @@ function App() {
                     setCardioUnlockedWeekKeys(d.cardioUnlockedWeekKeys);
                 if (typeof d.cardioRevealedCount === "number")
                     setCardioRevealedCount(d.cardioRevealedCount);
+                if (Array.isArray(d.programBlocks))
+                    setProgramBlocks(d.programBlocks);
+                if (Array.isArray(d.deletedProgramBlockIds))
+                    setDeletedProgramBlockIds(d.deletedProgramBlockIds);
             }
         }
         catch (e) { }
@@ -1011,6 +1068,40 @@ function App() {
         }, 1200);
         return () => clearTimeout(t);
     }, []);
+    // ---- PROGRAM BLOCKS: one-time migration (start) — additive only. If
+    // no blocks exist yet, creates a single open-ended block for whatever
+    // program was already active, starting from the earliest date it has
+    // any logged data (so existing history stays covered by the Master
+    // Calendar rather than suddenly showing as ungoverned gaps). ----
+    const pbMigratedRef = useRef(false);
+    useEffect(() => {
+        const t = setTimeout(() => {
+            if (pbMigratedRef.current)
+                return;
+            pbMigratedRef.current = true;
+            setProgramBlocks((cur) => {
+                if (cur.length > 0)
+                    return cur;
+                const pid = stateRef.current.currentProgramId !== undefined ? stateRef.current.currentProgramId : BUILTIN_ID;
+                const en = stateRef.current.entries || {};
+                const wPrefix = `wd|${pid}|`;
+                let earliest = null;
+                Object.keys(en).forEach((k) => {
+                    if (k.indexOf(wPrefix) !== 0)
+                        return;
+                    const dk = k.slice(wPrefix.length).split("|")[0];
+                    if (!earliest || dk < earliest)
+                        earliest = dk;
+                });
+                const startDate = earliest || dateKey(new Date());
+                const block = { id: "pb_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8), programId: pid, startDate, endDate: null };
+                programBlocksDirtyRef.current = true;
+                return [block];
+            });
+        }, 1300);
+        return () => clearTimeout(t);
+    }, []);
+    // ---- PROGRAM BLOCKS: one-time migration (end) ----
     // Measure width
     useEffect(() => {
         const el = wrapRef.current;
@@ -1102,6 +1193,7 @@ function App() {
         const wasProgramsDirty = programsDirtyRef.current;
         const wasAiTargetsDirty = aiTargetsDirtyRef.current;
         const wasCardioDirty = cardioDirtyRef.current;
+        const wasProgramBlocksDirty = programBlocksDirtyRef.current;
         try {
             const { error } = await supa.from("workout_logs").upsert({ user_id: uid, data: stateRef.current, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
             if (error) {
@@ -1116,6 +1208,8 @@ function App() {
                     aiTargetsDirtyRef.current = false;
                 if (wasCardioDirty)
                     cardioDirtyRef.current = false;
+                if (wasProgramBlocksDirty)
+                    programBlocksDirtyRef.current = false;
                 setSyncStatus("Synced ✓");
                 setSyncOk(true);
             }
@@ -1216,6 +1310,23 @@ function App() {
                         setCardioRevealedCount((cur) => Math.max(cur, remote.cardioRevealedCount));
                     }
                 }
+                // Program Blocks: same union-by-id + tombstone pattern as
+                // programs and cardio sessions — a block deleted on one
+                // device stays deleted everywhere, a block added on one
+                // device shows up everywhere.
+                if (!programBlocksDirtyRef.current) {
+                    if (Array.isArray(remote.programBlocks)) {
+                        const localDeleted = stateRef.current.deletedProgramBlockIds || [];
+                        const remoteDeleted = Array.isArray(remote.deletedProgramBlockIds) ? remote.deletedProgramBlockIds : [];
+                        const mergedDeleted = Array.from(new Set([...localDeleted, ...remoteDeleted]));
+                        const localBlocks = stateRef.current.programBlocks || [];
+                        const merged = remote.programBlocks.slice();
+                        localBlocks.forEach((lb) => { if (!merged.find((rb) => rb.id === lb.id))
+                            merged.push(lb); });
+                        setProgramBlocks(merged.filter((b) => !mergedDeleted.includes(b.id)));
+                        setDeletedProgramBlockIds(mergedDeleted);
+                    }
+                }
                 setTimeout(() => { persistLocal(); pullingRef.current = false; pushRemote(); }, 0);
             }
             else {
@@ -1293,9 +1404,15 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, persistLocal, schedulePush]);
     const C = colors(ACCENT);
     const activeProgram = getActiveProgram(currentProgramId, programs);
+    const headerProgramName = (() => {
+        if (focusedDate || !PROGRAM_BLOCKS_ENABLED)
+            return activeProgram.name;
+        const todaysProgram = resolveProgramForDate(programBlocks, programs, new Date());
+        return todaysProgram ? todaysProgram.name : "Workout Log";
+    })();
     // ---- STOPWATCH effects + handlers (start) ----
     // Load this date's saved stopwatch state whenever the focused day changes.
     useEffect(() => {
@@ -1402,8 +1519,17 @@ function App() {
         setViewMonth(startOfMonth(new Date()));
     };
     const openWorkout = (d) => {
-        if (activeProgram.kind === "weekly") {
-            const exs = exercisesForDate(activeProgram, entries, d);
+        let program = activeProgram;
+        if (PROGRAM_BLOCKS_ENABLED) {
+            const resolved = resolveProgramForDate(programBlocks, programs, d);
+            if (!resolved)
+                return; // gap — no block covers this date, nothing to open
+            program = resolved;
+            if (resolved.id !== currentProgramId)
+                setCurrentProgramId(resolved.id);
+        }
+        if (program.kind === "weekly") {
+            const exs = exercisesForDate(program, entries, d);
             if (!exs || !exs.length)
                 return; // rest day
         }
@@ -1867,6 +1993,71 @@ function App() {
         setProgramStatus(`Deleted "${program.name}".`);
         setProgramStatusOk(true);
     };
+    // ---- PROGRAM BLOCKS handlers (start) ----
+    // Atomically closes whatever block is currently open-ended (setting
+    // its end to the day before the new start) and opens a new open-ended
+    // block for the newly selected program. This is the one action that
+    // replaces manually finding-and-editing the current block.
+    const switchProgram = () => {
+        setPbError("");
+        const startDateKey = pbSwitchStartDate || dateKey(new Date());
+        setProgramBlocks((cur) => {
+            let next = cur.slice();
+            const openIdx = next.findIndex((b) => b.endDate === null);
+            if (openIdx >= 0) {
+                const endBefore = dateKey(addDays(keyToDate(startDateKey), -1));
+                if (endBefore >= next[openIdx].startDate) {
+                    next[openIdx] = Object.assign({}, next[openIdx], { endDate: endBefore });
+                }
+                else {
+                    // new start is on/before the currently-open block's own
+                    // start — that block never really happened, drop it
+                    // rather than leave an inverted range.
+                    next.splice(openIdx, 1);
+                }
+            }
+            const overlap = next.some((b) => b.endDate !== null && pbOverlaps(startDateKey, null, b.startDate, b.endDate));
+            if (overlap) {
+                setPbError("That start date overlaps an existing historical block. Pick a different date or remove the conflicting block first.");
+                return cur;
+            }
+            const id = "pb_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+            next.push({ id, programId: pbSwitchProgramId, startDate: startDateKey, endDate: null });
+            programBlocksDirtyRef.current = true;
+            return next;
+        });
+        setPbSwitchStartDate("");
+    };
+    const removeProgramBlock = (block) => {
+        const ok = window.confirm(`Remove this ${block.endDate ? "" : "ongoing "}block for "${pbProgramName(programs, block.programId)}"? Dates it covered will show as rest days on the Master Calendar until another block covers them. Logged data isn't affected.`);
+        if (!ok)
+            return;
+        setProgramBlocks((cur) => cur.filter((b) => b.id !== block.id));
+        setDeletedProgramBlockIds((cur) => cur.includes(block.id) ? cur : [...cur, block.id]);
+        programBlocksDirtyRef.current = true;
+    };
+    const addHistoricalBlock = () => {
+        setPbError("");
+        if (!pbHistStart || !pbHistEnd) {
+            setPbError("Pick a start and end date.");
+            return;
+        }
+        if (pbHistEnd < pbHistStart) {
+            setPbError("End date must be after the start date.");
+            return;
+        }
+        const overlap = programBlocks.some((b) => pbOverlaps(pbHistStart, pbHistEnd, b.startDate, b.endDate));
+        if (overlap) {
+            setPbError("That range overlaps an existing block.");
+            return;
+        }
+        const id = "pb_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+        setProgramBlocks((cur) => [...cur, { id, programId: pbHistProgramId, startDate: pbHistStart, endDate: pbHistEnd }]);
+        programBlocksDirtyRef.current = true;
+        setPbHistStart("");
+        setPbHistEnd("");
+    };
+    // ---- PROGRAM BLOCKS handlers (end) ----
     // ---- Auth ----
     const signIn = async () => {
         const supa = supaRef.current;
@@ -2191,7 +2382,7 @@ function App() {
                 React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 } },
                     React.createElement("div", null,
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".14em", color: "#A79F93", marginBottom: 3 } }, "WORKOUT LOG"),
-                        React.createElement("div", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "-.01em", color: "#26221D", lineHeight: 1 } }, activeProgram.name)),
+                        React.createElement("div", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "-.01em", color: "#26221D", lineHeight: 1 } }, headerProgramName)),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexShrink: 0 } },
                         React.createElement("button", { onClick: () => { setMenuOpen(true); setAccountSubView(null); setStatus(""); setRestoreText(""); setProgramStatus(""); }, title: "Account", style: { width: 34, height: 34, border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, color: "#5E574C", fontSize: 19, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } }, "\u22EF"))),
                 focusedDate ? (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 14 } },
@@ -2218,12 +2409,18 @@ function App() {
                 React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 8 } }, WEEKDAY_LETTERS.map((d, i) => (React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, d)))),
                 calRows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 } }, row.map((cell, ci) => {
                     const isToday = sameDate(cell.date, today);
+                    const cellProgram = PROGRAM_BLOCKS_ENABLED ? resolveProgramForDate(programBlocks, programs, cell.date) : activeProgram;
                     let restDay = false;
-                    if (cell.inMonth && activeProgram.kind === "weekly") {
-                        const exs = exercisesForDate(activeProgram, entries, cell.date);
-                        restDay = !exs || !exs.length;
+                    if (cell.inMonth) {
+                        if (!cellProgram) {
+                            restDay = true;
+                        }
+                        else if (cellProgram.kind === "weekly") {
+                            const exs = exercisesForDate(cellProgram, entries, cell.date);
+                            restDay = !exs || !exs.length;
+                        }
                     }
-                    const logged = cell.inMonth && dayHasReps(entries, activeProgram, cell.date);
+                    const logged = cell.inMonth && !!cellProgram && dayHasReps(entries, cellProgram, cell.date);
                     const disabled = !cell.inMonth || restDay;
                     const hasCardio = FEATURE_CARDIO && cell.inMonth && cardioSessions.some((s) => s.date === dateKey(cell.date) && s.durationSec >= CARDIO_FLOOR_SEC);
                     let bg = "transparent", fg = cell.inMonth ? C.ink : "#D8D2C6", ring = null;
@@ -2283,17 +2480,20 @@ function App() {
                     React.createElement("button", { onClick: () => { setMenuOpen(false); setAccountSubView(null); }, style: { width: 34, height: 34, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                 React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, overflow: "hidden", marginBottom: 10 } },
-                        React.createElement("button", { onClick: () => selectProgram(BUILTIN_ID), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "none", borderBottom: "1px solid #ECE7DE", background: currentProgramId === BUILTIN_ID ? "#FFF3EE" : "#fff", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
+                        React.createElement("div", { onClick: () => selectProgram(BUILTIN_ID), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid #ECE7DE", background: currentProgramId === BUILTIN_ID ? "#FFF3EE" : "#fff", cursor: "pointer" } },
                             React.createElement("div", null,
                                 React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, SPLITS[0].title),
                                 React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, "Built-in")),
-                            currentProgramId === BUILTIN_ID && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16 } }, "\u2713")),
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, flexShrink: 0 } },
+                                currentProgramId === BUILTIN_ID && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16, marginRight: 2 } }, "\u2713"),
+                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); setPbHistoryProgramId(BUILTIN_ID); setPbHistoryMonth(startOfMonth(new Date())); }, title: "View history", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDCC5"))),
                         programs.map((p, i) => (React.createElement("div", { key: p.id, onClick: () => selectProgram(p.id), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: i === programs.length - 1 ? "none" : "1px solid #ECE7DE", background: currentProgramId === p.id ? "#FFF3EE" : "#fff", cursor: "pointer" } },
                             React.createElement("div", { style: { minWidth: 0, marginRight: 8 } },
                                 React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
                                 React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, p.kind === "weekly" ? "Weekly" : "Custom")),
                             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, flexShrink: 0 } },
                                 currentProgramId === p.id && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16, marginRight: 2 } }, "\u2713"),
+                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); setPbHistoryProgramId(p.id); setPbHistoryMonth(startOfMonth(new Date())); }, title: "View history", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDCC5"),
                                 React.createElement("button", { onClick: (e) => { e.stopPropagation(); openBuilderForEdit(p); }, title: "Edit program", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\u270E"),
                                 React.createElement("button", { onClick: (e) => { e.stopPropagation(); deleteProgram(p); }, title: "Delete program", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDDD1")))))),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
@@ -2304,7 +2504,8 @@ function App() {
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
                         React.createElement("a", { href: "Weekly_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Weekly template"),
                         React.createElement("a", { href: "Custom_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Custom template")),
-                    React.createElement("div", { style: { minHeight: programStatus ? 18 : 0, marginBottom: programStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: programStatusOk ? "#1F8A5B" : "#C0392B" } }, programStatus)))),
+                    React.createElement("div", { style: { minHeight: programStatus ? 18 : 0, marginBottom: programStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: programStatusOk ? "#1F8A5B" : "#C0392B" } }, programStatus),
+                    PROGRAM_BLOCKS_ENABLED && (React.createElement("button", { onClick: () => { setPbError(""); setPbView("manage"); }, style: { width: "100%", marginTop: 4, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#FAF8F5", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Program Schedule"))))),
             menuOpen && accountSubView === "sync" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
                 React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
                     React.createElement("button", { onClick: () => setAccountSubView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
@@ -2514,6 +2715,99 @@ function App() {
                         React.createElement("textarea", { value: aiImportText, onChange: (e) => setAiImportText(e.target.value), placeholder: "\u2026or paste the weekly-targets JSON here", style: { width: "100%", boxSizing: "border-box", height: 90, border: "1px solid #E7E1D7", borderRadius: 11, padding: 10, fontFamily: "ui-monospace, monospace", fontSize: 12, color: "#26221D", resize: "none", marginBottom: 8 } }),
                         React.createElement("button", { onClick: () => aiImportFromText(aiImportText), style: { width: "100%", padding: 11, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Import pasted JSON"),
                         React.createElement("div", { style: { minHeight: aiImportStatus ? 18 : 0, marginTop: 10, fontSize: 12, fontWeight: 700, textAlign: "center", color: aiImportOk ? "#1F8A5B" : "#C0392B" } }, aiImportStatus)))))),
+React.createElement("div", null,
+        PROGRAM_BLOCKS_ENABLED && pbView === "manage" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 34, background: "#fff", display: "flex", flexDirection: "column" } },
+            React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                React.createElement("button", { onClick: () => setPbView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Program Schedule"),
+                React.createElement("div", { style: { width: 66 } })),
+            React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "SWITCH PROGRAM"),
+                React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.4, color: "#8C857B", margin: "0 0 10px" } }, "Starts a new block for the selected program from the chosen date onward, and automatically ends whatever block is currently running."),
+                React.createElement("select", { value: pbSwitchProgramId, onChange: (e) => setPbSwitchProgramId(e.target.value === String(BUILTIN_ID) ? BUILTIN_ID : e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 8 } },
+                    React.createElement("option", { value: BUILTIN_ID }, SPLITS[0].title),
+                    programs.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.name))),
+                React.createElement("input", { type: "date", value: pbSwitchStartDate, onChange: (e) => setPbSwitchStartDate(e.target.value), placeholder: "Today", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, marginBottom: 10 } }),
+                React.createElement("button", { onClick: switchProgram, style: { width: "100%", padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Switch Program"),
+                React.createElement("div", { style: { minHeight: pbError ? 18 : 0, margin: pbError ? "10px 0" : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#C0392B" } }, pbError),
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, margin: "20px 0 8px" } }, "CURRENT & PAST BLOCKS"),
+                programBlocks.length === 0 && React.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 16 } }, "No blocks yet."),
+                programBlocks.slice().sort((a, b) => b.startDate.localeCompare(a.startDate)).map((b) => (React.createElement("div", { key: b.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", background: b.endDate ? "#fff" : "#FFF3EE", border: `1.5px solid ${b.endDate ? "#E7E1D7" : C.a}`, borderRadius: 12, padding: "12px 14px", marginBottom: 10 } },
+                    React.createElement("div", { style: { minWidth: 0 } },
+                        React.createElement("div", { style: { fontSize: 13.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, pbProgramName(programs, b.programId)),
+                        React.createElement("div", { style: { fontSize: 12, color: "#5E574C", marginTop: 2 } },
+                            b.startDate,
+                            " \u2013 ",
+                            b.endDate || "ongoing")),
+                    React.createElement("button", { onClick: () => removeProgramBlock(b), style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 16, cursor: "pointer", padding: 6, flexShrink: 0 } }, "\u2715")))),
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, margin: "20px 0 8px" } }, "ADD A HISTORICAL BLOCK"),
+                React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.4, color: "#8C857B", margin: "0 0 10px" } }, "For backdating an exact range, e.g. a program you ran in the past. Must have both a start and end date."),
+                React.createElement("select", { value: pbHistProgramId, onChange: (e) => setPbHistProgramId(e.target.value === String(BUILTIN_ID) ? BUILTIN_ID : e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 8 } },
+                    React.createElement("option", { value: BUILTIN_ID }, SPLITS[0].title),
+                    programs.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.name))),
+                React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
+                    React.createElement("div", { style: { flex: 1 } },
+                        React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 4 } }, "START DATE"),
+                        React.createElement("input", { type: "date", value: pbHistStart, onChange: (e) => setPbHistStart(e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13 } })),
+                    React.createElement("div", { style: { flex: 1 } },
+                        React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginBottom: 4 } }, "END DATE"),
+                        React.createElement("input", { type: "date", value: pbHistEnd, onChange: (e) => setPbHistEnd(e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13 } }))),
+                React.createElement("button", { onClick: addHistoricalBlock, style: { width: "100%", padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Add Historical Block")))),
+        PROGRAM_BLOCKS_ENABLED && pbHistoryProgramId !== null && (() => {
+            const histProgram = getActiveProgram(pbHistoryProgramId, programs);
+            const histMonth = pbHistoryMonth || startOfMonth(new Date());
+            const histCells = buildMonthGrid(histMonth);
+            const histRows = [];
+            for (let i = 0; i < histCells.length; i += 7)
+                histRows.push(histCells.slice(i, i + 7));
+            const todayD = new Date();
+            return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 35, background: "#fff", display: "flex", flexDirection: "column" } },
+                React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                    React.createElement("button", { onClick: () => setPbHistoryProgramId(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                    React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 } }, histProgram.name),
+                    React.createElement("div", { style: { width: 66 } })),
+                React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: "18px 16px" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 } },
+                        React.createElement("button", { onClick: () => setPbHistoryMonth(addDays(startOfMonth(histMonth), -1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
+                        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: "#26221D" } },
+                            MONTH_NAMES[histMonth.getMonth()],
+                            " ",
+                            histMonth.getFullYear()),
+                        React.createElement("button", { onClick: () => setPbHistoryMonth(new Date(histMonth.getFullYear(), histMonth.getMonth() + 1, 1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Next")),
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 8 } }, WEEKDAY_LETTERS.map((d, i) => React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, d))),
+                    histRows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 } }, row.map((cell, ci) => {
+                        const isToday = sameDate(cell.date, todayD);
+                        let restDay = false;
+                        if (cell.inMonth && histProgram.kind === "weekly") {
+                            const exs = exercisesForDate(histProgram, entries, cell.date);
+                            restDay = !exs || !exs.length;
+                        }
+                        const logged = cell.inMonth && dayHasReps(entries, histProgram, cell.date);
+                        const disabled = !cell.inMonth || restDay;
+                        let bg = "transparent", fg = cell.inMonth ? C.ink : "#D8D2C6", ring = null;
+                        if (logged) {
+                            bg = REP_COLOR_BG.green;
+                            ring = "#2FAE66";
+                            fg = cell.inMonth ? "#1B7A46" : fg;
+                        }
+                        else if (restDay) {
+                            fg = "#D8D2C6";
+                        }
+                        return (React.createElement("div", { key: ci, style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 0" } },
+                            React.createElement("div", { style: { width: 42, height: 42, borderRadius: 10, boxSizing: "border-box", border: isToday && cell.inMonth ? `2.5px solid ${TODAY_BLUE}` : "none", display: "flex", alignItems: "center", justifyContent: "center" } },
+                                React.createElement("button", { className: "wl-daybtn", disabled: disabled, onClick: () => {
+                                        if (disabled)
+                                            return;
+                                        setCurrentProgramId(pbHistoryProgramId);
+                                        setFocusedDate(dateKey(cell.date));
+                                        setPbHistoryProgramId(null);
+                                    }, style: { width: 34, height: 34, borderRadius: "50%", background: bg, border: ring ? `2px solid ${ring}` : "none", color: fg, fontSize: 14, fontWeight: isToday ? 800 : 600 } }, cell.date.getDate()))));
+                    })))),
+                    React.createElement("p", { style: { fontSize: 12, color: C.muted, marginTop: 16, lineHeight: 1.4 } },
+                        "This shows every date logged for ",
+                        histProgram.name,
+                        ", regardless of which program is currently scheduled on the Master Calendar. Tap a date to open it."))));
+        })()),
             FEATURE_CARDIO && cardioView === "main" && (() => {
                 const progression = cardioWeekProgression(cardioSessions);
                 const thisWeek = progression.length ? progression[progression.length - 1] : { target: CARDIO_WEEK1_TARGET, effective: 0, met: false };
