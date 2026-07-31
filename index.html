@@ -296,6 +296,24 @@ function pbProgramName(programs, pid) {
     const p = (programs || []).find((pp) => pp.id === pid);
     return p ? p.name : "(deleted program)";
 }
+// Soft background tints used to band the calendar by which program governs
+// each date. Deliberately low-saturation so they sit behind the green
+// "logged" ring, the blue today border and the red cardio underline without
+// competing with any of them. Assigned by position (built-in always first,
+// then programs in list order) rather than by hashing the id — hashing
+// produced frequent collisions, which would make two different programs
+// share a band and defeat the point.
+const PB_TINTS = ["#EDF3FA", "#F4EFF8", "#EDF6F0", "#FBF2EC", "#F7F1E8", "#F0F2F6"];
+function pbTintForProgram(pid, programs) {
+    if (pid === null || pid === undefined)
+        return null;
+    if (pid === BUILTIN_ID)
+        return PB_TINTS[0];
+    const idx = (programs || []).findIndex((p) => p.id === pid);
+    if (idx < 0)
+        return null;
+    return PB_TINTS[(idx + 1) % PB_TINTS.length];
+}
 // ============================================================
 // PROGRAM BLOCKS MODULE (end)
 // ============================================================
@@ -900,6 +918,7 @@ function App() {
     // ---- ANALYSIS EXPORT state (start) ----
     const [axOpen, setAxOpen] = useState(false);
     const [axCopyStatus, setAxCopyStatus] = useState("");
+    const [axProgramId, setAxProgramId] = useState(BUILTIN_ID); // which program the export pulls from; set to today's scheduled program when the screen opens
     // ---- ANALYSIS EXPORT state (end) ----
     // ---- AI WEEKLY TARGETS state (start) ----
     const [aiTargets, setAiTargets] = useState(null); // null | parsed weekly-targets object
@@ -938,6 +957,7 @@ function App() {
     const [currentProgramId, setCurrentProgramId] = useState(BUILTIN_ID);
     const [viewMonth, setViewMonth] = useState(startOfMonth(new Date()));
     const [focusedDate, setFocusedDate] = useState(null); // null | "YYYY-MM-DD"
+    const [gapNotice, setGapNotice] = useState(null); // dateKey of a tapped date with no program scheduled
     const [vw, setVw] = useState(390);
     const [menuOpen, setMenuOpen] = useState(false);
     const [accountSubView, setAccountSubView] = useState(null); // null | "programs" | "sync" | "backup"
@@ -1627,7 +1647,8 @@ function App() {
     };
     // ---- BODY COMPOSITION handlers (end) ----
     // ---- ANALYSIS EXPORT handlers (start) ----
-    const axText = axOpen ? buildAnalysisExport(activeProgram, entries) : "";
+    const axProgram = getActiveProgram(axProgramId, programs);
+    const axText = axOpen ? buildAnalysisExport(axProgram, entries) : "";
     const axDoCopy = () => {
         const str = axText;
         const done = () => { setAxCopyStatus("Copied to clipboard. ✓"); };
@@ -1657,7 +1678,7 @@ function App() {
             setAxCopyStatus("File downloaded. ✓");
         }
         catch (e) {
-            setAxCopyStatus("Could not download — try Copy instead.");
+            setAxCopyStatus("Could not download — try Copy Data instead.");
         }
     };
     // ---- ANALYSIS EXPORT handlers (end) ----
@@ -1777,12 +1798,13 @@ function App() {
     }, [cardioSessions]);
     // ---- CARDIO handlers + effects (end) ----
     // ---- My Programs ----
-    const selectProgram = (id) => {
-        currentProgramId !== id && (programsDirtyRef.current = true);
-        setCurrentProgramId(id);
-        setFocusedDate(null);
-        setViewMonth(startOfMonth(new Date()));
-    };
+    // NOTE: there is deliberately no manual "select program" action anymore.
+    // Which program governs a given date is decided entirely by Program
+    // Blocks (see the PROGRAM BLOCKS module), and currentProgramId is now
+    // set automatically — by openWorkout() when you tap a calendar date, and
+    // by the per-program history calendar. The Analysis Export screen has
+    // its own explicit program picker (axProgramId) rather than piggybacking
+    // on currentProgramId, so nothing silently depends on a hidden selection.
     const onAddProgramFile = (e) => {
         const file = e.target.files && e.target.files[0];
         e.target.value = "";
@@ -2141,7 +2163,7 @@ function App() {
             setStatusOk(true);
         }
         catch (e) {
-            setStatus('Could not download — try "Copy code" instead.');
+            setStatus('Could not download — try "Copy Code" instead.');
             setStatusOk(false);
         }
     };
@@ -2301,7 +2323,7 @@ function App() {
             focusedContent = (React.createElement("div", null,
                 activeProgram.kind === "custom" && (React.createElement("div", { style: { padding: "12px 16px 4px", display: "flex", alignItems: "center", justifyContent: "space-between" } },
                     React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.a } }, (activeProgram.dayTypes.find((dt) => dt.id === entries[`dt|${activeProgram.id}|${focusedDate}`]) || {}).label),
-                    React.createElement("button", { onClick: changeDayType, style: { border: "none", background: "transparent", color: "#8C857B", fontFamily: "inherit", fontSize: 12, fontWeight: 600, cursor: "pointer", textDecoration: "underline" } }, "Change day type"))),
+                    React.createElement("button", { onClick: changeDayType, style: { border: "none", background: "transparent", color: "#8C857B", fontFamily: "inherit", fontSize: 12, fontWeight: 600, cursor: "pointer", textDecoration: "underline" } }, "Change Day Type"))),
                 rowsToShow.length === 0 && finishers.length === 0 ? (React.createElement("div", { style: { padding: "40px 20px 20px", textAlign: "center", color: C.muted, fontSize: 14, fontWeight: 600 } }, "Rest day \u2014 no exercises scheduled.")) : (React.createElement("div", { style: { display: "flex", width: fDims.LEFT + fDims.PANEL, minWidth: "100%" } },
                     React.createElement("div", { style: { position: "sticky", left: 0, zIndex: 4, flex: `0 0 ${fDims.LEFT}px`, width: fDims.LEFT, background: "#fff" } }, fLeft),
                     React.createElement("div", { style: { flex: `0 0 ${fDims.PANEL}px`, width: fDims.PANEL } }, fPanelRows))),
@@ -2391,12 +2413,12 @@ function App() {
                         React.createElement("button", { onClick: goPrevWorkout, disabled: activeProgram.kind === "custom" && !entries[`dt|${activeProgram.id}|${focusedDate}`], style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "\u2039 Previous Workout"),
                         React.createElement("button", { onClick: goHome, style: { border: "none", cursor: "pointer", background: C.a, color: "#fff", borderRadius: 10, padding: "9px 18px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1 } }, "Home"),
                         React.createElement("button", { onClick: goNextWorkout, disabled: !hasNextWorkoutBtn, style: { border: "1px solid #E7E1D7", background: "#fff", color: "#5E574C", borderRadius: 10, padding: "9px 13px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, lineHeight: 1, cursor: "pointer" } }, "Next Workout \u203A")))) : (React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 } },
-                    React.createElement("button", { onClick: () => setViewMonth((m) => addDays(startOfMonth(m), -1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
+                    React.createElement("button", { onClick: () => { setGapNotice(null); setViewMonth((m) => addDays(startOfMonth(m), -1)); }, style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: "#26221D" } },
                         MONTH_NAMES[viewMonth.getMonth()],
                         " ",
                         viewMonth.getFullYear()),
-                    React.createElement("button", { onClick: () => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Next"))),
+                    React.createElement("button", { onClick: () => { setGapNotice(null); setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1)); }, style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Next"))),
                 !focusedDate && !sameMonth(viewMonth, today) && (React.createElement("button", { onClick: () => setViewMonth(startOfMonth(today)), style: { marginTop: 10, width: "100%", padding: "8px 0", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } }, "Today"))),
             focusedDate ? (React.createElement("div", { className: "wl-scroll", style: { position: "absolute", top: "calc(env(safe-area-inset-top, 0px) + 166px)", left: 0, right: 0, bottom: 0, overflow: "auto", background: "#fff", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 28px)" } }, needsDayTypePick ? (React.createElement("div", { style: { padding: 20 } },
                 React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.muted, marginBottom: 12, textAlign: "center" } }, "Select a day type for this date"),
@@ -2410,35 +2432,36 @@ function App() {
                 calRows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 } }, row.map((cell, ci) => {
                     const isToday = sameDate(cell.date, today);
                     const cellProgram = PROGRAM_BLOCKS_ENABLED ? resolveProgramForDate(programBlocks, programs, cell.date) : activeProgram;
+                    // A "gap" (no Program Block covers this date) is distinct from
+                    // a "rest day" (a program governs it, but schedules nothing).
+                    // Gaps stay tappable so they can explain themselves instead of
+                    // failing silently.
+                    const isGap = cell.inMonth && PROGRAM_BLOCKS_ENABLED && !cellProgram;
                     let restDay = false;
-                    if (cell.inMonth) {
-                        if (!cellProgram) {
-                            restDay = true;
-                        }
-                        else if (cellProgram.kind === "weekly") {
-                            const exs = exercisesForDate(cellProgram, entries, cell.date);
-                            restDay = !exs || !exs.length;
-                        }
+                    if (cell.inMonth && cellProgram && cellProgram.kind === "weekly") {
+                        const exs = exercisesForDate(cellProgram, entries, cell.date);
+                        restDay = !exs || !exs.length;
                     }
                     const logged = cell.inMonth && !!cellProgram && dayHasReps(entries, cellProgram, cell.date);
                     const disabled = !cell.inMonth || restDay;
                     const hasCardio = FEATURE_CARDIO && cell.inMonth && cardioSessions.some((s) => s.date === dateKey(cell.date) && s.durationSec >= CARDIO_FLOOR_SEC);
+                    const tint = (PROGRAM_BLOCKS_ENABLED && cell.inMonth && cellProgram) ? pbTintForProgram(cellProgram.id, programs) : null;
                     let bg = "transparent", fg = cell.inMonth ? C.ink : "#D8D2C6", ring = null;
                     if (logged) {
                         bg = REP_COLOR_BG.green;
                         ring = "#2FAE66";
                         fg = cell.inMonth ? "#1B7A46" : fg;
                     }
-                    else if (restDay) {
+                    else if (restDay || isGap) {
                         fg = "#D8D2C6";
                     }
-                    return (React.createElement("div", { key: ci, style: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 0" } },
+                    return (React.createElement("div", { key: ci, style: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 0", background: tint || "transparent" } },
                         React.createElement("div", { style: {
                                 width: 42, height: 42, borderRadius: 10, boxSizing: "border-box",
                                 border: isToday && cell.inMonth ? `2.5px solid ${TODAY_BLUE}` : "none",
                                 display: "flex", alignItems: "center", justifyContent: "center",
                             } },
-                            React.createElement("button", { className: "wl-daybtn", disabled: disabled, onClick: () => openWorkout(cell.date), style: {
+                            React.createElement("button", { className: "wl-daybtn", disabled: disabled, onClick: () => { if (isGap) { setGapNotice(dateKey(cell.date)); } else { setGapNotice(null); openWorkout(cell.date); } }, style: {
                                     width: 34, height: 34, borderRadius: "50%",
                                     background: bg,
                                     border: ring ? `2px solid ${ring}` : "none",
@@ -2456,16 +2479,43 @@ function App() {
                     FEATURE_CARDIO && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                         React.createElement("div", { style: { width: 14, height: 2.5, borderRadius: 2, background: "#D7263D" } }),
                         React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Cardio")))),
+                PROGRAM_BLOCKS_ENABLED && (() => {
+                    // Legend for the tint bands: which programs appear in this month.
+                    const seen = [];
+                    monthCells.forEach((cell) => {
+                        if (!cell.inMonth)
+                            return;
+                        const pid = resolveProgramIdForDate(programBlocks, dateKey(cell.date));
+                        if (pid === null || pid === undefined)
+                            return;
+                        if (!seen.some((x) => x.pid === pid))
+                            seen.push({ pid, name: pbProgramName(programs, pid), tint: pbTintForProgram(pid, programs) });
+                    });
+                    if (!seen.length)
+                        return null;
+                    return React.createElement("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, marginTop: 12 } }, seen.map((x) => (React.createElement("div", { key: String(x.pid), style: { display: "flex", alignItems: "center", gap: 6 } },
+                        React.createElement("div", { style: { width: 14, height: 14, borderRadius: 4, background: x.tint, border: "1px solid #E0DACE" } }),
+                        React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, x.name)))));
+                })(),
+                gapNotice && (React.createElement("div", { style: { marginTop: 14, padding: "12px 14px", border: "1px solid #E7E1D7", borderRadius: 12, background: "#FAF8F5" } },
+                    React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 2 } }, "No program scheduled"),
+                    React.createElement("div", { style: { fontSize: 12.5, color: "#8C857B", lineHeight: 1.4, marginBottom: 10 } },
+                        "Nothing is scheduled for ",
+                        formatLongDate(keyToDate(gapNotice)),
+                        ". Add a block covering this date to log workouts on it."),
+                    React.createElement("div", { style: { display: "flex", gap: 8 } },
+                        React.createElement("button", { onClick: () => { setGapNotice(null); setPbError(""); setPbView("manage"); }, style: { flex: 1, padding: 10, border: "none", borderRadius: 10, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Open Program Schedule"),
+                        React.createElement("button", { onClick: () => setGapNotice(null), style: { padding: "10px 14px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Dismiss")))),
                 FEATURE_CARDIO && (React.createElement("button", { onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { marginTop: 16, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D7263D", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Cardio")),
                 BODY_COMP_ENABLED && (React.createElement("button", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D9A81C", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Body Composition")),
-                ANALYSIS_EXPORT_ENABLED && (React.createElement("button", { onClick: () => { setAxCopyStatus(""); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Analyze with AI")))),
+                ANALYSIS_EXPORT_ENABLED && (React.createElement("button", { onClick: () => { setAxCopyStatus(""); const todays = PROGRAM_BLOCKS_ENABLED ? resolveProgramIdForDate(programBlocks, dateKey(new Date())) : currentProgramId; setAxProgramId(todays !== null && todays !== undefined ? todays : currentProgramId); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Analyze with AI")))),
             menuOpen && !accountSubView && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 } },
                         React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#26221D" } }, "Account"),
                         React.createElement("button", { onClick: () => setMenuOpen(false), style: { width: 30, height: 30, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                     [
-                        { key: "programs", title: "My Programs", subtitle: activeProgram.name },
+                        { key: "programs", title: "My Programs", subtitle: `${programs.length + 1} program${programs.length + 1 === 1 ? "" : "s"} · manage schedule` },
                         { key: "sync", title: "Account & Sync", subtitle: user ? user.email : "Not signed in" },
                         { key: "backup", title: "Backup & Restore", subtitle: "Export or restore your data" },
                     ].map((row, i) => (React.createElement("button", { key: row.key, onClick: () => { setAccountSubView(row.key); setStatus(""); setRestoreText(""); setProgramStatus(""); }, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 4px", border: "none", borderTop: i === 0 ? "none" : "1px solid #ECE7DE", background: "transparent", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
@@ -2480,19 +2530,17 @@ function App() {
                     React.createElement("button", { onClick: () => { setMenuOpen(false); setAccountSubView(null); }, style: { width: 34, height: 34, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                 React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, overflow: "hidden", marginBottom: 10 } },
-                        React.createElement("div", { onClick: () => selectProgram(BUILTIN_ID), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid #ECE7DE", background: currentProgramId === BUILTIN_ID ? "#FFF3EE" : "#fff", cursor: "pointer" } },
+                        React.createElement("div", { style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid #ECE7DE", background: "#fff" } },
                             React.createElement("div", null,
                                 React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, SPLITS[0].title),
                                 React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, "Built-in")),
                             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, flexShrink: 0 } },
-                                currentProgramId === BUILTIN_ID && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16, marginRight: 2 } }, "\u2713"),
                                 React.createElement("button", { onClick: (e) => { e.stopPropagation(); setPbHistoryProgramId(BUILTIN_ID); setPbHistoryMonth(startOfMonth(new Date())); }, title: "View history", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDCC5"))),
-                        programs.map((p, i) => (React.createElement("div", { key: p.id, onClick: () => selectProgram(p.id), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: i === programs.length - 1 ? "none" : "1px solid #ECE7DE", background: currentProgramId === p.id ? "#FFF3EE" : "#fff", cursor: "pointer" } },
+                        programs.map((p, i) => (React.createElement("div", { key: p.id, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: i === programs.length - 1 ? "none" : "1px solid #ECE7DE", background: "#fff" } },
                             React.createElement("div", { style: { minWidth: 0, marginRight: 8 } },
                                 React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
                                 React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, p.kind === "weekly" ? "Weekly" : "Custom")),
                             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, flexShrink: 0 } },
-                                currentProgramId === p.id && React.createElement("span", { style: { color: C.a, fontWeight: 800, fontSize: 16, marginRight: 2 } }, "\u2713"),
                                 React.createElement("button", { onClick: (e) => { e.stopPropagation(); setPbHistoryProgramId(p.id); setPbHistoryMonth(startOfMonth(new Date())); }, title: "View history", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDCC5"),
                                 React.createElement("button", { onClick: (e) => { e.stopPropagation(); openBuilderForEdit(p); }, title: "Edit program", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\u270E"),
                                 React.createElement("button", { onClick: (e) => { e.stopPropagation(); deleteProgram(p); }, title: "Delete program", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDDD1")))))),
@@ -2502,8 +2550,8 @@ function App() {
                             React.createElement("input", { type: "file", accept: ".xlsx", onChange: onAddProgramFile, style: { display: "none" } })),
                         MANUAL_PROGRAM_BUILDER_ENABLED && (React.createElement("button", { onClick: openBuilder, style: { flex: 1, padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, background: "#fff", textAlign: "center", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer", fontFamily: "inherit" } }, "Add Manually"))),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
-                        React.createElement("a", { href: "Weekly_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Weekly template"),
-                        React.createElement("a", { href: "Custom_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Custom template")),
+                        React.createElement("a", { href: "Weekly_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Weekly Template"),
+                        React.createElement("a", { href: "Custom_Program_Template.xlsx", download: true, style: { flex: 1, textAlign: "center", padding: "10px 8px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "none" } }, "Download Custom Template")),
                     React.createElement("div", { style: { minHeight: programStatus ? 18 : 0, marginBottom: programStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: programStatusOk ? "#1F8A5B" : "#C0392B" } }, programStatus),
                     PROGRAM_BLOCKS_ENABLED && (React.createElement("button", { onClick: () => { setPbError(""); setPbView("manage"); }, style: { width: "100%", marginTop: 4, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#FAF8F5", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Program Schedule"))))),
             menuOpen && accountSubView === "sync" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
@@ -2518,13 +2566,13 @@ function App() {
                                 React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".05em", color: "#A79F93" } }, "SIGNED IN"),
                                 React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#26221D", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, user.email)),
                             React.createElement("div", { style: { display: "flex", gap: 7, flexShrink: 0 } },
-                                React.createElement("button", { onClick: () => { pullMerge(); bcPullAll(); }, style: { padding: "8px 12px", border: "1px solid #E7E1D7", borderRadius: 9, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sync now"),
-                                React.createElement("button", { onClick: signOut, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: "#F1EDE6", color: "#5E574C", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sign out"))))) : (React.createElement("div", { style: { marginBottom: 18 } },
+                                React.createElement("button", { onClick: () => { pullMerge(); bcPullAll(); }, style: { padding: "8px 12px", border: "1px solid #E7E1D7", borderRadius: 9, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sync Now"),
+                                React.createElement("button", { onClick: signOut, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: "#F1EDE6", color: "#5E574C", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Sign Out"))))) : (React.createElement("div", { style: { marginBottom: 18 } },
                         React.createElement("input", { type: "email", autoComplete: "email", value: authEmail, onChange: (e) => setAuthEmail(e.target.value), placeholder: "Email", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 8 } }),
                         React.createElement("input", { type: "password", autoComplete: "current-password", value: authPass, onChange: (e) => setAuthPass(e.target.value), placeholder: "Password", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 10 } }),
                         React.createElement("div", { style: { display: "flex", gap: 8 } },
-                            React.createElement("button", { onClick: signIn, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Sign in"),
-                            React.createElement("button", { onClick: signUp, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Create account")))),
+                            React.createElement("button", { onClick: signIn, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Sign In"),
+                            React.createElement("button", { onClick: signUp, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Create Account")))),
                     React.createElement("div", { style: { minHeight: syncStatus ? 18 : 0, marginBottom: syncStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: syncOk ? "#1F8A5B" : "#C0392B" } }, syncStatus)))),
             menuOpen && accountSubView === "backup" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
                 React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
@@ -2534,14 +2582,14 @@ function App() {
                 React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "BACK UP"),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 18 } },
-                        React.createElement("button", { onClick: doDownload, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Download file"),
-                        React.createElement("button", { onClick: doCopy, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Copy code")),
+                        React.createElement("button", { onClick: doDownload, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Download File"),
+                        React.createElement("button", { onClick: doCopy, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Copy Code")),
                     React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: "#A79F93", marginBottom: 8 } }, "RESTORE"),
                     React.createElement("label", { style: { display: "block", padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 13, fontWeight: 600, color: "#5E574C", cursor: "pointer", marginBottom: 10 } },
-                        "Choose backup file",
+                        "Choose Backup File",
                         React.createElement("input", { type: "file", accept: ".json,application/json", onChange: onRestoreFile, style: { display: "none" } })),
                     React.createElement("textarea", { value: restoreText, onChange: (e) => setRestoreText(e.target.value), placeholder: "\u2026or paste a backup code here", style: { width: "100%", boxSizing: "border-box", height: 70, border: "1px solid #E7E1D7", borderRadius: 11, padding: 10, fontFamily: "inherit", fontSize: 12, color: "#26221D", resize: "none" } }),
-                    React.createElement("button", { onClick: () => applyRestore(restoreText), style: { width: "100%", marginTop: 8, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Restore from code"),
+                    React.createElement("button", { onClick: () => applyRestore(restoreText), style: { width: "100%", marginTop: 8, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Restore From Code"),
                     React.createElement("div", { style: { marginTop: 12, minHeight: 16, fontSize: 12.5, fontWeight: 700, textAlign: "center", color: status ? (statusOk ? "#1F8A5B" : "#C0392B") : "transparent" } }, status || "placeholder")))),
             MANUAL_PROGRAM_BUILDER_ENABLED && builderOpen && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 25, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center" } },
                 React.createElement("div", { style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
@@ -2691,11 +2739,15 @@ function App() {
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Analysis Export"),
                     React.createElement("div", { style: { width: 66 } })),
                 React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 6 } }, "PROGRAM TO ANALYZE"),
+                    React.createElement("select", { value: axProgramId, onChange: (e) => setAxProgramId(e.target.value === String(BUILTIN_ID) ? BUILTIN_ID : e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 12 } },
+                        React.createElement("option", { value: BUILTIN_ID }, SPLITS[0].title),
+                        programs.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.name))),
                     React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.45, color: "#8C857B", margin: "0 0 14px" } },
                         "This is your last ",
                         AX_EXPORT_WEEKS,
                         " weeks of logged history for ",
-                        activeProgram.name,
+                        axProgram.name,
                         ", formatted for pasting into a Claude chat (this one or a new one) to get AI analysis of your trends \u2014 progress, plateaus, consistency, and so on."),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
                         React.createElement("button", { onClick: axDoCopy, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Copy Data"),
@@ -2709,11 +2761,11 @@ function App() {
                         React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: aiTargets ? "#1F8A5B" : C.muted, marginBottom: 10 } }, aiTargets ? `Loaded: week of ${aiTargets.week_of}` : "No targets imported yet"),
                         React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
                             React.createElement("label", { style: { flex: 1, display: "block", padding: 11, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } },
-                                "Choose file",
+                                "Choose File",
                                 React.createElement("input", { type: "file", accept: ".json,application/json", onChange: onAiTargetsFile, style: { display: "none" } })),
                             aiTargets && (React.createElement("button", { onClick: clearAiTargets, style: { padding: "11px 14px", border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Clear"))),
                         React.createElement("textarea", { value: aiImportText, onChange: (e) => setAiImportText(e.target.value), placeholder: "\u2026or paste the weekly-targets JSON here", style: { width: "100%", boxSizing: "border-box", height: 90, border: "1px solid #E7E1D7", borderRadius: 11, padding: 10, fontFamily: "ui-monospace, monospace", fontSize: 12, color: "#26221D", resize: "none", marginBottom: 8 } }),
-                        React.createElement("button", { onClick: () => aiImportFromText(aiImportText), style: { width: "100%", padding: 11, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Import pasted JSON"),
+                        React.createElement("button", { onClick: () => aiImportFromText(aiImportText), style: { width: "100%", padding: 11, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Import Pasted JSON"),
                         React.createElement("div", { style: { minHeight: aiImportStatus ? 18 : 0, marginTop: 10, fontSize: 12, fontWeight: 700, textAlign: "center", color: aiImportOk ? "#1F8A5B" : "#C0392B" } }, aiImportStatus)))))),
 React.createElement("div", null,
         PROGRAM_BLOCKS_ENABLED && pbView === "manage" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 34, background: "#fff", display: "flex", flexDirection: "column" } },
