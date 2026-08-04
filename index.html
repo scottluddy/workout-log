@@ -471,17 +471,41 @@ function migrateLegacyEntries(entries) {
 // ============================================================
 // COLOR CODING MODULE (start) — safe to delete this entire block
 // ============================================================
-// Rule: comparing a rep cell against the same set, same exercise, 7
-// calendar days earlier (the previous occurrence of this workout). Only
-// fires if the weight that day matches this day's weight exactly.
+// Rule: comparing a rep cell against the same set of the same exercise in
+// the previous occurrence of this same workout. For weekly programs that's
+// 7 calendar days earlier; for custom programs (e.g. Push/Pull/Legs) it's
+// the previous date actually assigned the same day type, which may not be
+// exactly a week back. Only fires if the weight that day matches this day's
+// weight exactly.
 //   reps went up   -> green
 //   reps unchanged -> yellow
 //   reps went down -> red
 const REP_COLOR_BG = { green: "#E3F5E7", yellow: "#FFF6D8", red: "#FDE7E5" };
-function computeRepColor(entries, programId, dk, rid, si) {
+// Finds the date of the previous occurrence of the same workout. For weekly
+// programs that's simply 7 days earlier (Monday compares to last Monday).
+// For custom programs (e.g. Push/Pull/Legs) the same day type can land on
+// different weekdays week to week, so we walk back to the previous date
+// actually assigned that day type — the same lookup Previous Workout uses.
+// Returns null when there's no meaningful previous session to compare to.
+function findPrevSessionKey(entries, program, dk) {
+    if (!program)
+        return null;
+    if (program.kind === "weekly")
+        return dateKey(addDays(keyToDate(dk), -7));
+    const dtId = entries[`dt|${program.id}|${dk}`];
+    if (!dtId)
+        return null;
+    return findAdjacentSameDayType(entries, program.id, dk, dtId, -1);
+}
+function computeRepColor(entries, program, dk, rid, si) {
     if (!COLOR_CODE_ENABLED)
         return null;
-    const prevKey = dateKey(addDays(keyToDate(dk), -7));
+    if (!program)
+        return null;
+    const programId = program.id;
+    const prevKey = findPrevSessionKey(entries, program, dk);
+    if (!prevKey)
+        return null;
     const wCur = entries[`wd|${programId}|${dk}|${rid}`];
     const wPrev = entries[`wd|${programId}|${prevKey}|${rid}`];
     if (!wCur || !wPrev)
@@ -2290,7 +2314,7 @@ function App() {
                 const wKey = `wd|${activeProgram.id}|${focusedDate}|${r.rid}`;
                 const reps = [0, 1, 2, 3, 4].map((si) => {
                     if (si < r.sets) {
-                        const repColor = computeRepColor(entries, activeProgram.id, focusedDate, r.rid, si);
+                        const repColor = computeRepColor(entries, activeProgram, focusedDate, r.rid, si);
                         return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
                             React.createElement(Input, { value: entries[`rd|${activeProgram.id}|${focusedDate}|${r.rid}|${si}`], onChange: (e) => setEntry(`rd|${activeProgram.id}|${focusedDate}|${r.rid}|${si}`, e.target.value, "rep") })));
                     }
