@@ -529,6 +529,172 @@ function computeRepColor(entries, program, dk, rid, si) {
 // ============================================================
 // COLOR CODING MODULE (end)
 // ============================================================
+// ============================================================
+// PERSONAL TRAINER MODULE (start) — safe to delete entirely: remove this
+// block, the "PERSONAL TRAINER" state/handlers in App(), the trainer popup
+// and the Trainer button in the compact session row, then flip
+// PERSONAL_TRAINER_ENABLED to false. Purely a read-only planner over data
+// that already exists — no new storage, no sync, no network.
+//
+// The progression model, in the user's own terms:
+//   * Never add more than 1 rep to a set, and always fill in order, so a
+//     session's reps are monotonically non-increasing (7-7-6-6, never
+//     7-6-7-6). That makes the state at a given weight a simple counter:
+//     how many sets have been advanced above the base.
+//         6-6-6-6 -> 7-6-6-6 -> 7-7-6-6 -> 7-7-7-6 -> 7-7-7-7 -> base++
+//   * Exactly one set gets the rep each session (the first set sitting at
+//     the base). Everything else holds. "Stimulate, don't annihilate."
+//   * A brand new weight resets every set to the rep-range floor.
+//   * When every set reaches the range ceiling, it's time to add weight.
+// Because targets are always hit by construction, reps alone can't reveal
+// whether a weight felt easy. The one honest signal is the user beating
+// the prescription (adding to 2+ sets in a session) — ptRunningAhead()
+// counts those, and the UI offers a faster ladder once it's a pattern
+// rather than a one-off.
+const PERSONAL_TRAINER_ENABLED = true;
+const PT_PUSH_BG = "#E3F5E7", PT_PUSH_FG = "#1B7A46", PT_PUSH_BORDER = "#2FAE66";
+const PT_HOLD_BG = "#FFF6D8", PT_HOLD_FG = "#8A6D1B", PT_HOLD_BORDER = "#E3CE84";
+const PT_MANTRAS = {
+    push: "Any Progress Every Exercise Wins the Workout.",
+    hold: "Stimulate, Don't Annihilate.",
+    form: "Stretch. Control. Squeeze.",
+    newWeight: "Control the Weight, Control the Ego.",
+    addWeight: "Weight is the Tool, Tension the Driver.",
+    lastExercise: "Leave on a Quarter Tank.",
+};
+function ptParseRange(repRange) {
+    if (!repRange)
+        return null;
+    const s = String(repRange);
+    const m = s.match(/(\d+)\s*[-–]\s*(\d+)/);
+    if (m) {
+        const floor = parseInt(m[1], 10), ceiling = parseInt(m[2], 10);
+        if (isNaN(floor) || isNaN(ceiling))
+            return null;
+        return { floor: Math.min(floor, ceiling), ceiling: Math.max(floor, ceiling) };
+    }
+    const one = s.match(/(\d+)/);
+    if (one) {
+        const v = parseInt(one[1], 10);
+        if (!isNaN(v))
+            return { floor: v, ceiling: v };
+    }
+    return null;
+}
+function ptSessionReps(entries, programId, dk, rid, nSets) {
+    const reps = [];
+    for (let i = 0; i < nSets; i++) {
+        const v = entries[`rd|${programId}|${dk}|${rid}|${i}`];
+        const n = v ? parseInt(v, 10) : NaN;
+        reps.push(isNaN(n) ? null : n);
+    }
+    return reps;
+}
+// Walks back through previous occurrences of this same workout (day-type
+// aware, reusing findPrevSessionKey) collecting sessions that actually have
+// data for this exercise. Newest first.
+function ptPrevSessions(entries, program, dk, rid, nSets, want) {
+    const out = [];
+    let cursor = dk;
+    for (let guard = 0; guard < 14 && out.length < (want || 6); guard++) {
+        const prev = findPrevSessionKey(entries, program, cursor);
+        if (!prev)
+            break;
+        cursor = prev;
+        const wRaw = entries[`wd|${program.id}|${prev}|${rid}`];
+        const w = wRaw ? parseFloat(wRaw) : NaN;
+        const reps = ptSessionReps(entries, program.id, prev, rid, nSets);
+        if (!isNaN(w) && reps.some((r) => r !== null))
+            out.push({ dk: prev, weight: w, reps });
+    }
+    return out;
+}
+// How many times, across consecutive same-weight sessions, total reps rose
+// by 2 or more — i.e. the user advanced more than the single prescribed set.
+function ptRunningAhead(history, weight) {
+    const same = history.filter((h) => h.weight === weight);
+    const sum = (r) => r.filter((x) => x !== null).reduce((a, b) => a + b, 0);
+    let count = 0;
+    for (let i = 0; i < same.length - 1; i++) {
+        if (sum(same[i].reps) - sum(same[i + 1].reps) >= 2)
+            count++;
+    }
+    return count;
+}
+function ptComputePlan(entries, program, dk, ex) {
+    const nSets = Math.max(1, ex.sets || 1);
+    const range = ptParseRange(ex.repRange);
+    const todayReps = ptSessionReps(entries, program.id, dk, ex.rid, nSets);
+    const curRaw = entries[`wd|${program.id}|${dk}|${ex.rid}`];
+    const curWeight = curRaw ? parseFloat(curRaw) : NaN;
+    const base = { name: ex.name, rid: ex.rid, nSets, range, todayReps, repRange: ex.repRange };
+    if (!range)
+        return Object.assign({}, base, { kind: "norange" });
+    const history = ptPrevSessions(entries, program, dk, ex.rid, nSets, 6);
+    const prev = history[0] || null;
+    if (!prev)
+        return Object.assign({}, base, { kind: "first", targets: Array(nSets).fill(range.floor), pushIdx: -1 });
+    // If today's weight hasn't been entered yet, plan as if the weight is
+    // unchanged — that's the common case and the most useful default.
+    const weightAssumed = isNaN(curWeight);
+    const effWeight = weightAssumed ? prev.weight : curWeight;
+    const shared = Object.assign({}, base, { prev, history, effWeight, weightAssumed });
+    if (effWeight !== prev.weight) {
+        return Object.assign({}, shared, { kind: "newweight", targets: Array(nSets).fill(range.floor), pushIdx: -1 });
+    }
+    const valid = prev.reps.filter((r) => r !== null);
+    if (!valid.length)
+        return Object.assign({}, shared, { kind: "first", targets: Array(nSets).fill(range.floor), pushIdx: -1 });
+    const complete = prev.reps.every((r) => r !== null);
+    if (complete && prev.reps.every((r) => r >= range.ceiling)) {
+        return Object.assign({}, shared, { kind: "addweight", targets: Array(nSets).fill(range.floor), pushIdx: -1 });
+    }
+    const lo = Math.min.apply(null, valid);
+    const targets = prev.reps.map((r) => (r === null ? lo : r));
+    const pushIdx = targets.findIndex((r) => r === lo);
+    if (pushIdx >= 0)
+        targets[pushIdx] = Math.min(range.ceiling, lo + 1);
+    return Object.assign({}, shared, {
+        kind: "ladder",
+        targets,
+        pushIdx,
+        aheadCount: ptRunningAhead(history, prev.weight),
+    });
+}
+function ptMantraFor(plan, isLastExercise) {
+    if (!plan)
+        return PT_MANTRAS.form;
+    if (isLastExercise)
+        return PT_MANTRAS.lastExercise;
+    if (plan.kind === "newweight")
+        return PT_MANTRAS.newWeight;
+    if (plan.kind === "addweight")
+        return PT_MANTRAS.addWeight;
+    if (plan.kind === "ladder") {
+        const done = plan.todayReps.filter((r) => r !== null).length;
+        // Once you're past the set that carries the rep, the job switches
+        // from earning progress to not overspending it.
+        if (plan.pushIdx >= 0 && done > plan.pushIdx)
+            return PT_MANTRAS.hold;
+        return PT_MANTRAS.push;
+    }
+    return PT_MANTRAS.form;
+}
+function ptHeadline(plan) {
+    if (!plan)
+        return "";
+    switch (plan.kind) {
+        case "norange": return "No rep range set for this exercise.";
+        case "first": return `First time logged — aim for ${plan.range.floor} across all sets.`;
+        case "newweight": return `New weight — reset to ${plan.range.floor}. The ladder restarts next session.`;
+        case "addweight": return `Every set hit ${plan.range.ceiling}. Add weight and reset to ${plan.range.floor}.`;
+        case "ladder": return `Set ${plan.pushIdx + 1} carries the rep. Everything else holds.`;
+        default: return "";
+    }
+}
+// ============================================================
+// PERSONAL TRAINER MODULE (end)
+// ============================================================
 function dimsFocused(availW) {
     const desktop = availW >= 640;
     let LEFT = Math.round(availW * (desktop ? 0.15 : 0.255));
@@ -569,7 +735,7 @@ function findAdjacentSameDayType(entries, programId, fromKey, dtId, dir, maxDays
 // the card + overlay in the render tree, and flip ANALYSIS_EXPORT_ENABLED
 // to false. Purely a read-only formatter over data that already exists —
 // no new storage, no sync, no network calls of its own.
-const ANALYSIS_EXPORT_ENABLED = true;
+const ANALYSIS_EXPORT_ENABLED = false; // hidden for now — the export/import plumbing stays intact and will likely be reused by the Personal Trainer module
 const AX_EXPORT_WEEKS = 6; // how far back the export looks — adjust freely
 function axResolveExerciseName(ridToName, entries, pid, dk, rid) {
     if (ridToName[rid])
@@ -932,6 +1098,10 @@ function App() {
     const [swAccumulatedMs, setSwAccumulatedMs] = useState(0); // ms banked from previous run segments
     const [swTick, setSwTick] = useState(0); // dummy value bumped to force a re-render while running
     // ---- STOPWATCH state (end) ----
+    // ---- PERSONAL TRAINER state (start) ----
+    const [ptOpen, setPtOpen] = useState(false);
+    const [ptExIdx, setPtExIdx] = useState(0);
+    // ---- PERSONAL TRAINER state (end) ----
     // ---- BODY COMPOSITION state (start) ----
     const [bcEntries, setBcEntries] = useState({}); // dateKey -> {actualWeight,bf,waist,belly}
     const [bcBlocks, setBcBlocks] = useState([]); // [{id,type,startDate,endDate,startingWeight,weeklyRate}]
@@ -1501,6 +1671,8 @@ function App() {
     }, []);
     // ---- AI WEEKLY TARGETS: reset deck position on day change ----
     useEffect(() => { setAiDeckIndex(0); }, [focusedDate]);
+    // ---- PERSONAL TRAINER: reset popup when the focused day changes ----
+    useEffect(() => { setPtOpen(false); setPtExIdx(0); }, [focusedDate]);
     // ---- BODY COMPOSITION: open pre-scrolled ~4 weeks before today ----
     useEffect(() => {
         if (bcView !== "table")
@@ -2355,12 +2527,69 @@ function App() {
                     React.createElement("button", { onClick: () => addFinisher("Abs"), style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Abs"),
                     React.createElement("button", { onClick: () => addFinisher("Calves"), style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Calves"),
                     React.createElement("button", { onClick: addCustomFinisher, style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Custom\u2026")),
-                React.createElement("div", { style: { margin: "0 16px 28px", padding: 16, border: "1px solid #E7E1D7", borderRadius: 14, background: "#FAF8F5" } },
-                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 10, textAlign: "center" } }, "STOPWATCH"),
-                    React.createElement("div", { style: { fontSize: 38, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center", marginBottom: 14 } }, formatStopwatch(swElapsedMs)),
-                    React.createElement("div", { style: { display: "flex", gap: 8 } },
-                        !swRunning ? (React.createElement("button", { onClick: swStart, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Start")) : (React.createElement("button", { onClick: swStop, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: "#5E574C", color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Stop")),
-                        React.createElement("button", { onClick: swReset, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Reset"))),
+React.createElement("div", null,
+        PERSONAL_TRAINER_ENABLED && ptOpen && rowsToShow.length > 0 && (() => {
+            const idx = Math.max(0, Math.min(rowsToShow.length - 1, ptExIdx));
+            const ex = rowsToShow[idx];
+            const plan = ptComputePlan(entries, activeProgram, focusedDate, ex);
+            const isLast = idx === rowsToShow.length - 1;
+            const mantra = ptMantraFor(plan, isLast);
+            const headline = ptHeadline(plan);
+            const targets = plan.targets || [];
+            const showAhead = plan.kind === "ladder" && plan.aheadCount >= 2;
+            return (React.createElement("div", { style: { margin: "0 16px 10px", border: "1px solid #DDD6C9", borderRadius: 16, background: "#fff", boxShadow: "0 6px 20px rgba(38,34,29,0.10)", overflow: "hidden" } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px 0" } },
+                    React.createElement("div", { style: { fontSize: 9, fontWeight: 800, letterSpacing: ".13em", color: "#157A6E" } }, "TRAINER"),
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 2 } },
+                        React.createElement("button", { onClick: () => setPtExIdx(Math.max(0, idx - 1)), disabled: idx === 0, style: { border: "none", background: "transparent", color: idx === 0 ? "#DDD6C9" : "#5E574C", fontSize: 17, fontWeight: 700, cursor: idx === 0 ? "default" : "pointer", padding: "2px 8px", lineHeight: 1 } }, "\u2039"),
+                        React.createElement("div", { style: { fontSize: 10, fontWeight: 700, color: C.muted, minWidth: 30, textAlign: "center" } },
+                            idx + 1,
+                            "/",
+                            rowsToShow.length),
+                        React.createElement("button", { onClick: () => setPtExIdx(Math.min(rowsToShow.length - 1, idx + 1)), disabled: isLast, style: { border: "none", background: "transparent", color: isLast ? "#DDD6C9" : "#5E574C", fontSize: 17, fontWeight: 700, cursor: isLast ? "default" : "pointer", padding: "2px 8px", lineHeight: 1 } }, "\u203A"),
+                        React.createElement("button", { onClick: () => setPtOpen(false), style: { width: 24, height: 24, marginLeft: 4, border: "none", background: "#F1EDE6", borderRadius: 7, color: "#5E574C", fontSize: 12, cursor: "pointer", lineHeight: 1 } }, "\u2715"))),
+                React.createElement("div", { style: { padding: "4px 14px 0" } },
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ex.name),
+                    React.createElement("div", { style: { fontSize: 10.5, fontWeight: 600, color: C.muted, marginTop: 1 } },
+                        plan.prev ? `${plan.effWeight} lb · last ${plan.prev.reps.map((r) => (r === null ? "–" : r)).join("-")}` : "no previous session",
+                        plan.repRange ? ` · range ${plan.repRange}` : "")),
+                targets.length > 0 && (React.createElement("div", { style: { display: "flex", gap: 6, padding: "12px 14px 0" } }, targets.map((tv, i) => {
+                    const isPush = i === plan.pushIdx;
+                    const actual = plan.todayReps[i];
+                    const logged = actual !== null && actual !== undefined;
+                    return (React.createElement("div", { key: i, style: { flex: 1, textAlign: "center", borderRadius: 11, padding: "8px 0 6px", background: isPush ? PT_PUSH_BG : PT_HOLD_BG, border: `1.5px solid ${isPush ? PT_PUSH_BORDER : PT_HOLD_BORDER}`, opacity: logged ? 0.55 : 1 } },
+                        React.createElement("div", { style: { fontSize: 21, fontWeight: 800, color: isPush ? PT_PUSH_FG : PT_HOLD_FG, lineHeight: 1.05 } }, tv),
+                        React.createElement("div", { style: { fontSize: 8.5, fontWeight: 800, letterSpacing: ".05em", color: isPush ? PT_PUSH_FG : PT_HOLD_FG, opacity: 0.75, marginTop: 3 } }, logged ? `GOT ${actual}` : `S${i + 1}`)));
+                }))),
+                React.createElement("div", { style: { padding: "10px 14px 0", fontSize: 11, fontWeight: 600, color: "#5E574C", lineHeight: 1.35 } }, headline),
+                showAhead && (React.createElement("div", { style: { margin: "10px 14px 0", padding: "9px 11px", borderRadius: 10, background: PT_PUSH_BG, border: `1px solid ${PT_PUSH_BORDER}` } },
+                    React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, color: PT_PUSH_FG, lineHeight: 1.35 } },
+                        "You've beaten prescription ",
+                        plan.aheadCount,
+                        "\u00D7 at this weight \u2014 take a second rep if it's there."))),
+                React.createElement("div", { style: { margin: "12px 0 0", padding: "10px 14px", background: "#FAF8F5", borderTop: "1px solid #ECE7DE" } },
+                    React.createElement("div", { style: { fontSize: 12, fontWeight: 700, fontStyle: "italic", color: "#157A6E", textAlign: "center", lineHeight: 1.35 } }, mantra))));
+        })(),
+        React.createElement("div", { style: { display: "flex", gap: 8, margin: "0 16px 28px" } },
+            React.createElement("div", { style: { flex: 1, display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: "1px solid #E7E1D7", borderRadius: 13, background: "#FAF8F5" } },
+                React.createElement("div", { style: { minWidth: 52 } },
+                    React.createElement("div", { style: { fontSize: 8.5, fontWeight: 800, letterSpacing: ".08em", color: C.muted } }, "SESSION"),
+                    React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums", lineHeight: 1.15 } }, formatStopwatch(swElapsedMs))),
+                !swRunning ? (React.createElement("button", { onClick: swStart, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" } }, "Start")) : (React.createElement("button", { onClick: swStop, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: "#5E574C", color: "#fff", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" } }, "Stop")),
+                React.createElement("button", { onClick: swReset, style: { padding: "8px 11px", border: "1px solid #E7E1D7", borderRadius: 9, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" } }, "Reset")),
+            PERSONAL_TRAINER_ENABLED && rowsToShow.length > 0 && (React.createElement("button", { onClick: () => {
+                    if (!ptOpen) {
+                        const firstIncomplete = rowsToShow.findIndex((r) => {
+                            for (let i = 0; i < r.sets; i++) {
+                                if (!entries[`rd|${activeProgram.id}|${focusedDate}|${r.rid}|${i}`])
+                                    return true;
+                            }
+                            return false;
+                        });
+                        setPtExIdx(firstIncomplete >= 0 ? firstIncomplete : 0);
+                    }
+                    setPtOpen(!ptOpen);
+                }, style: { flexShrink: 0, padding: "0 18px", border: "none", borderRadius: 13, background: ptOpen ? "#0F5A50" : "#157A6E", color: "#fff", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" } }, "Trainer")))),
                 AI_TARGETS_ENABLED && dayAiTargets.length > 0 && (() => {
                     const cards = [];
                     if (aiTargets.overview)
