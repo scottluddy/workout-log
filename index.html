@@ -1081,6 +1081,68 @@ function cardioFormatDuration(sec) {
 // green once the target is met/exceeded, same "met = green" language used
 // elsewhere (calendar, color-coding module), and caps the bar's visual
 // fill at 100% even if the actual value goes higher, so it never overflows.
+// ============================================================
+// MODULE REGISTRY (start) — turns the app's optional features into
+// user-selectable modules. Two independent layers decide whether a module
+// shows up:
+//   1. its build flag below (FEATURE_CARDIO etc.) — a hard kill switch that
+//      removes it from the app entirely, for everyone; and
+//   2. the user's own choice, stored in `enabledModules` and synced with
+//      the rest of their data.
+// A module renders only when both agree, which is what moduleOn() checks.
+// Adding a future module means adding one entry here plus its own flag —
+// the settings screen and the gating both pick it up automatically.
+const MODULES = [
+    { id: "cardio", label: "Cardio", blurb: "Stopwatch, weekly effective-minute targets, and calendar marks.", available: () => FEATURE_CARDIO },
+    { id: "bodycomp", label: "Body Composition", blurb: "Weekly weigh-ins with bulk / cut / maintenance blocks.", available: () => BODY_COMP_ENABLED },
+    { id: "trainer", label: "Personal Trainer", blurb: "Per-set rep targets and cues inside each workout.", available: () => PERSONAL_TRAINER_ENABLED },
+    { id: "analysis", label: "Analyze with AI", blurb: "Export recent training history for outside analysis.", available: () => ANALYSIS_EXPORT_ENABLED },
+];
+function moduleAvailable(id) {
+    const m = MODULES.find((x) => x.id === id);
+    return !!m && !!m.available();
+}
+// Absent preferences means "not chosen yet" rather than "all off" — a user
+// who has never opened the settings screen should still see the app fully
+// assembled, so an unset list defaults to every available module.
+function moduleOn(enabledModules, id) {
+    if (!moduleAvailable(id))
+        return false;
+    if (!Array.isArray(enabledModules))
+        return true;
+    return enabledModules.indexOf(id) >= 0;
+}
+function defaultEnabledModules() {
+    return MODULES.filter((m) => m.available()).map((m) => m.id);
+}
+// ============================================================
+// MODULE REGISTRY (end)
+// ============================================================
+// ============================================================
+// CARDIO REWARDS OWNER GATE — the unlockable prompt list is personal, so it
+// renders only for accounts whose email local-part starts with this prefix.
+// A prefix rather than the full address keeps the owner's actual email out
+// of a file that anyone can view-source.
+//
+// Two things this deliberately is NOT:
+//   * It isn't access control. The rule is visible in the source, so anyone
+//     could register a matching address. It's here to keep the section out
+//     of other people's UI, not to defend anything.
+//   * It isn't secrecy for the prompts themselves — they ship in this file
+//     and are readable regardless. Move them to a Supabase table with
+//     row-level security if that ever matters.
+// Set to "" to hide the rewards from everyone.
+const CARDIO_REWARDS_OWNER_PREFIX = "scotti";
+function cardioRewardsVisible(user) {
+    if (!CARDIO_REWARDS_OWNER_PREFIX)
+        return false;
+    const email = String((user && user.email) || "").toLowerCase().trim();
+    if (!email)
+        return false;
+    const localPart = email.split("@")[0];
+    return localPart.indexOf(CARDIO_REWARDS_OWNER_PREFIX.toLowerCase()) === 0;
+}
+// ============================================================
 function ProgressBarRow({ current, target, unit, color }) {
     const safeTarget = target > 0 ? target : 1;
     const pct = Math.max(0, Math.min(100, Math.round((current / safeTarget) * 100)));
@@ -1168,7 +1230,11 @@ function App() {
     const [gapNotice, setGapNotice] = useState(null); // dateKey of a tapped date with no program scheduled
     const [vw, setVw] = useState(390);
     const [menuOpen, setMenuOpen] = useState(false);
-    const [accountSubView, setAccountSubView] = useState(null); // null | "programs" | "sync" | "backup"
+    const [accountSubView, setAccountSubView] = useState(null); // null | "programs" | "sync" | "backup" | "modules"
+    // null means "never chosen" — moduleOn() treats that as all-on so the app
+    // looks complete until the user actually opts out of something.
+    const [enabledModules, setEnabledModules] = useState(null);
+    const enabledModulesDirtyRef = useRef(false);
     const [restoreText, setRestoreText] = useState("");
     const [status, setStatus] = useState("");
     const [statusOk, setStatusOk] = useState(true);
@@ -1200,7 +1266,7 @@ function App() {
     const dirtyRef = useRef(new Set());
     const programsDirtyRef = useRef(false);
     const stateRef = useRef({ entries, programs, currentProgramId });
-    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds };
+    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, enabledModules };
     const migratedRef = useRef(false);
     // ---- BODY COMPOSITION refs (start) ----
     const bcStateRef = useRef({ entries: {}, blocks: [] });
@@ -1244,6 +1310,8 @@ function App() {
                     setProgramBlocks(d.programBlocks);
                 if (Array.isArray(d.deletedProgramBlockIds))
                     setDeletedProgramBlockIds(d.deletedProgramBlockIds);
+                if (Array.isArray(d.enabledModules))
+                    setEnabledModules(d.enabledModules);
             }
         }
         catch (e) { }
@@ -1466,6 +1534,7 @@ function App() {
         const wasAiTargetsDirty = aiTargetsDirtyRef.current;
         const wasCardioDirty = cardioDirtyRef.current;
         const wasProgramBlocksDirty = programBlocksDirtyRef.current;
+        const wasModulesDirty = enabledModulesDirtyRef.current;
         try {
             const { error } = await supa.from("workout_logs").upsert({ user_id: uid, data: stateRef.current, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
             if (error) {
@@ -1482,6 +1551,8 @@ function App() {
                     cardioDirtyRef.current = false;
                 if (wasProgramBlocksDirty)
                     programBlocksDirtyRef.current = false;
+                if (wasModulesDirty)
+                    enabledModulesDirtyRef.current = false;
                 setSyncStatus("Synced ✓");
                 setSyncOk(true);
             }
@@ -1582,6 +1653,11 @@ function App() {
                         setCardioRevealedCount((cur) => Math.max(cur, remote.cardioRevealedCount));
                     }
                 }
+                // Module preferences: last-write-wins, dirty-flag gated, same
+                // as the other whole-value settings.
+                if (!enabledModulesDirtyRef.current && Array.isArray(remote.enabledModules)) {
+                    setEnabledModules(remote.enabledModules);
+                }
                 // Program Blocks: same union-by-id + tombstone pattern as
                 // programs and cardio sessions — a block deleted on one
                 // device stays deleted everywhere, a block added on one
@@ -1676,7 +1752,7 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, enabledModules, persistLocal, schedulePush]);
     const C = colors(ACCENT);
     const activeProgram = getActiveProgram(currentProgramId, programs);
     const headerProgramName = (() => {
@@ -2586,7 +2662,7 @@ function App() {
                     React.createElement("button", { onClick: () => addFinisher("Calves"), style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Calves"),
                     React.createElement("button", { onClick: addCustomFinisher, style: { padding: "8px 14px", borderRadius: 15, border: "1.5px dashed #E0C9A6", background: "#fff", color: "#B08A4E", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "+ Custom\u2026")),
 React.createElement("div", null,
-        PERSONAL_TRAINER_ENABLED && ptOpen && rowsToShow.length > 0 && (() => {
+        moduleOn(enabledModules, "trainer") && ptOpen && rowsToShow.length > 0 && (() => {
             const idx = Math.max(0, Math.min(rowsToShow.length - 1, ptExIdx));
             const ex = rowsToShow[idx];
             const plan = ptComputePlan(entries, activeProgram, focusedDate, ex);
@@ -2635,7 +2711,7 @@ React.createElement("div", null,
                     React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums", lineHeight: 1.15 } }, formatStopwatch(swElapsedMs))),
                 !swRunning ? (React.createElement("button", { onClick: swStart, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" } }, "Start")) : (React.createElement("button", { onClick: swStop, style: { padding: "8px 12px", border: "none", borderRadius: 9, background: "#5E574C", color: "#fff", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" } }, "Stop")),
                 React.createElement("button", { onClick: swReset, style: { padding: "8px 11px", border: "1px solid #E7E1D7", borderRadius: 9, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" } }, "Reset")),
-            PERSONAL_TRAINER_ENABLED && rowsToShow.length > 0 && (React.createElement("button", { onClick: () => {
+            moduleOn(enabledModules, "trainer") && rowsToShow.length > 0 && (React.createElement("button", { onClick: () => {
                     if (!ptOpen) {
                         const firstIncomplete = rowsToShow.findIndex((r) => {
                             for (let i = 0; i < r.sets; i++) {
@@ -2755,7 +2831,7 @@ React.createElement("div", null,
                     }
                     const logged = cell.inMonth && !!cellProgram && dayHasReps(entries, cellProgram, cell.date);
                     const disabled = !cell.inMonth || restDay;
-                    const hasCardio = FEATURE_CARDIO && cell.inMonth && cardioSessions.some((s) => s.date === dateKey(cell.date) && s.durationSec >= CARDIO_FLOOR_SEC);
+                    const hasCardio = moduleOn(enabledModules, "cardio") && cell.inMonth && cardioSessions.some((s) => s.date === dateKey(cell.date) && s.durationSec >= CARDIO_FLOOR_SEC);
                     const tint = (PROGRAM_BLOCKS_ENABLED && cell.inMonth && cellProgram) ? pbTintForProgram(cellProgram.id, programs) : null;
                     let bg = "transparent", fg = cell.inMonth ? C.ink : "#D8D2C6", ring = null;
                     if (logged) {
@@ -2787,7 +2863,7 @@ React.createElement("div", null,
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                         React.createElement("div", { style: { width: 12, height: 12, borderRadius: "50%", background: REP_COLOR_BG.green, border: "2px solid #2FAE66" } }),
                         React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Logged workout")),
-                    FEATURE_CARDIO && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                    moduleOn(enabledModules, "cardio") && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                         React.createElement("div", { style: { width: 14, height: 2.5, borderRadius: 2, background: "#D7263D" } }),
                         React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, "Cardio")))),
                 PROGRAM_BLOCKS_ENABLED && (() => {
@@ -2821,9 +2897,9 @@ React.createElement("div", null,
                     React.createElement("div", { style: { display: "flex", gap: 8 } },
                         React.createElement("button", { onClick: () => { setGapNotice(null); setPbError(""); setPbView("manage"); }, style: { flex: 1, padding: 10, border: "none", borderRadius: 10, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Open Program Schedule"),
                         React.createElement("button", { onClick: () => setGapNotice(null), style: { padding: "10px 14px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Dismiss")))),
-                FEATURE_CARDIO && (React.createElement("button", { onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { marginTop: 16, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D7263D", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Cardio")),
-                BODY_COMP_ENABLED && (React.createElement("button", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D9A81C", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Body Composition")),
-                ANALYSIS_EXPORT_ENABLED && (React.createElement("button", { onClick: () => { setAxCopyStatus(""); const todays = PROGRAM_BLOCKS_ENABLED ? resolveProgramIdForDate(programBlocks, dateKey(new Date())) : currentProgramId; setAxProgramId(todays !== null && todays !== undefined ? todays : currentProgramId); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Analyze with AI")))),
+                moduleOn(enabledModules, "cardio") && (React.createElement("button", { onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { marginTop: 16, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D7263D", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Cardio")),
+                moduleOn(enabledModules, "bodycomp") && (React.createElement("button", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D9A81C", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Body Composition")),
+                moduleOn(enabledModules, "analysis") && (React.createElement("button", { onClick: () => { setAxCopyStatus(""); const todays = PROGRAM_BLOCKS_ENABLED ? resolveProgramIdForDate(programBlocks, dateKey(new Date())) : currentProgramId; setAxProgramId(todays !== null && todays !== undefined ? todays : currentProgramId); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Analyze with AI")))),
             menuOpen && !accountSubView && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 } },
@@ -2832,6 +2908,7 @@ React.createElement("div", null,
                     [
                         { key: "programs", title: "My Programs", subtitle: `${programs.length + 1} program${programs.length + 1 === 1 ? "" : "s"} · manage schedule` },
                         { key: "sync", title: "Account & Sync", subtitle: user ? user.email : "Not signed in" },
+                        { key: "modules", title: "Modules", subtitle: (() => { const on = MODULES.filter((m) => m.available() && moduleOn(enabledModules, m.id)).length; const tot = MODULES.filter((m) => m.available()).length; return `${on} of ${tot} turned on`; })() },
                         { key: "backup", title: "Backup & Restore", subtitle: "Export or restore your data" },
                     ].map((row, i) => (React.createElement("button", { key: row.key, onClick: () => { setAccountSubView(row.key); setStatus(""); setRestoreText(""); setProgramStatus(""); }, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 4px", border: "none", borderTop: i === 0 ? "none" : "1px solid #ECE7DE", background: "transparent", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
                         React.createElement("div", { style: { minWidth: 0 } },
@@ -2885,6 +2962,32 @@ React.createElement("div", null,
                             React.createElement("button", { onClick: signIn, style: { flex: 1, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Sign In"),
                             React.createElement("button", { onClick: signUp, style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Create Account")))),
                     React.createElement("div", { style: { minHeight: syncStatus ? 18 : 0, marginBottom: syncStatus ? 16 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: syncOk ? "#1F8A5B" : "#C0392B" } }, syncStatus)))),
+React.createElement("div", null, menuOpen && accountSubView === "modules" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
+        React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+            React.createElement("button", { onClick: () => setAccountSubView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+            React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Modules"),
+            React.createElement("button", { onClick: () => { setMenuOpen(false); setAccountSubView(null); }, style: { width: 34, height: 34, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+        React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
+            React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.45, color: "#8C857B", margin: "0 0 14px" } }, "Choose which parts of the app you want to see. Turning one off only hides it \u2014 nothing you've logged is deleted, and switching it back on brings your data with it."),
+            MODULES.filter((m) => m.available()).map((m) => {
+                const on = moduleOn(enabledModules, m.id);
+                return (React.createElement("div", { key: m.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 0", borderBottom: `1px solid ${C.line}` } },
+                    React.createElement("div", { style: { minWidth: 0 } },
+                        React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.ink } }, m.label),
+                        React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 2, lineHeight: 1.35 } }, m.blurb)),
+                    React.createElement("button", { onClick: () => {
+                            const cur = Array.isArray(enabledModules) ? enabledModules.slice() : defaultEnabledModules();
+                            const idx = cur.indexOf(m.id);
+                            if (idx >= 0)
+                                cur.splice(idx, 1);
+                            else
+                                cur.push(m.id);
+                            enabledModulesDirtyRef.current = true;
+                            setEnabledModules(cur);
+                        }, "aria-label": `${on ? "Turn off" : "Turn on"} ${m.label}`, style: { flexShrink: 0, width: 50, height: 30, borderRadius: 15, border: "none", background: on ? "#2FAE66" : "#DDD6C9", cursor: "pointer", padding: 0, position: "relative", transition: "background .15s" } },
+                        React.createElement("span", { style: { position: "absolute", top: 3, left: on ? 23 : 3, width: 24, height: 24, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "left .15s" } }))));
+            }),
+            React.createElement("button", { onClick: () => { enabledModulesDirtyRef.current = true; setEnabledModules(defaultEnabledModules()); }, style: { width: "100%", marginTop: 18, padding: 11, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Turn All On"))))),
             menuOpen && accountSubView === "backup" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 21, background: "#fff", display: "flex", flexDirection: "column" } },
                 React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
                     React.createElement("button", { onClick: () => setAccountSubView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
@@ -2961,7 +3064,7 @@ React.createElement("div", null,
                         React.createElement("div", { style: { display: "flex", gap: 8 } },
                             React.createElement("button", { onClick: () => builderEditingId ? closeBuilder() : setBuilderStep(1), style: { flex: 1, padding: 12, border: "1px solid #E7E1D7", borderRadius: 11, background: "#fff", color: "#26221D", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, builderEditingId ? "Cancel" : "Back"),
                             React.createElement("button", { onClick: saveBuilderProgram, style: { flex: 2, padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Save Program"))))))),
-            BODY_COMP_ENABLED && bcView === "table" && (() => {
+            moduleOn(enabledModules, "bodycomp") && bcView === "table" && (() => {
                 const todayD = new Date();
                 const bcRows = bcMondaysInRange(BC_START_DATE_KEY, addDays(todayD, 365));
                 return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 30, background: "#fff", display: "flex", flexDirection: "column" } },
@@ -3003,7 +3106,7 @@ React.createElement("div", null,
                                     React.createElement("input", { className: "wl-input", value: e.belly || "", onChange: (ev) => bcSetEntryField(dk, "belly", ev.target.value), inputMode: "decimal", style: cellInputStyle }))));
                         }))));
             })(),
-            BODY_COMP_ENABLED && bcView === "blocks" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 31, background: "#fff", display: "flex", flexDirection: "column" } },
+            moduleOn(enabledModules, "bodycomp") && bcView === "blocks" && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 31, background: "#fff", display: "flex", flexDirection: "column" } },
                 React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
                     React.createElement("button", { onClick: () => setBcView("table"), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Blocks"),
@@ -3044,7 +3147,7 @@ React.createElement("div", null,
                             React.createElement("input", { className: "wl-ph-gray", disabled: bcBlockForm.type === "maintenance", value: bcBlockForm.weeklyRate, onChange: (e) => setBcBlockForm((f) => ({ ...f, weeklyRate: bcSanitizeDecimal(e.target.value) })), placeholder: "ex. 0.5", inputMode: "decimal", style: { width: "100%", boxSizing: "border-box", padding: "9px 8px", border: "1px solid #E7E1D7", borderRadius: 9, fontFamily: "inherit", fontSize: 13, fontWeight: 700, opacity: bcBlockForm.type === "maintenance" ? 0.4 : 1, background: bcBlockForm.type === "maintenance" ? "#F5F2EC" : "#fff" } }))),
                     React.createElement("div", { style: { minHeight: bcBlockError ? 18 : 0, marginBottom: bcBlockError ? 10 : 0, fontSize: 12, fontWeight: 700, textAlign: "center", color: "#C0392B" } }, bcBlockError),
                     React.createElement("button", { onClick: bcAddBlock, style: { width: "100%", padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Add Block")))),
-            ANALYSIS_EXPORT_ENABLED && axOpen && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 32, background: "#fff", display: "flex", flexDirection: "column" } },
+            moduleOn(enabledModules, "analysis") && axOpen && (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 32, background: "#fff", display: "flex", flexDirection: "column" } },
                 React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
                     React.createElement("button", { onClick: () => setAxOpen(false), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Analysis Export"),
@@ -3168,7 +3271,7 @@ React.createElement("div", null,
                         histProgram.name,
                         ", regardless of which program is currently scheduled on the Master Calendar. Tap a date to open it."))));
         })()),
-            FEATURE_CARDIO && cardioView === "main" && (() => {
+            moduleOn(enabledModules, "cardio") && cardioView === "main" && (() => {
                 const progression = cardioWeekProgression(cardioSessions);
                 const thisWeek = progression.length ? progression[progression.length - 1] : { target: CARDIO_WEEK1_TARGET, effective: 0, met: false };
                 const totals = cardioWeeklyTotals(cardioSessions);
@@ -3233,7 +3336,7 @@ React.createElement("div", null,
                                         React.createElement("div", { style: { color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, s.durationSec >= CARDIO_FLOOR_SEC ? `${bcFormatWeight(cardioEffectiveMinutes(s.durationSec))} eff. min` : "below 5:00 — no credit")),
                                     React.createElement("button", { onClick: () => cardioRemoveSession(s.id), title: "Delete session", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: "4px 0 4px 10px", flexShrink: 0, lineHeight: 1 } }, "\u2715")));
                             }))),
-                        cardioRevealedCount > 0 && (React.createElement("div", null,
+                        cardioRewardsVisible(user) && cardioRevealedCount > 0 && (React.createElement("div", null,
                             React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } },
                                 "UNLOCKED (",
                                 cardioRevealedCount,
