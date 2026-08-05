@@ -243,6 +243,13 @@ function parseMDY(str) {
 // Every program (built-in or uploaded) is normalized to:
 //   weekly:  { id, name, kind: "weekly", days: [{dow0-6, exercises:[{rid,name,sets,repRange}]}] }
 //   custom:  { id, name, kind: "custom", dayTypes: [{id,label,exercises:[{rid,name,sets,repRange}]}] }
+// Split 4.0 was originally the app's one hardcoded program, and its id (0)
+// is baked into every entry key logged before multi-program support existed.
+// It is no longer offered to new users. Accounts that already hold data under
+// program 0 get it migrated exactly once into their normal programs list (see
+// the "PROGRAM 0 MIGRATION" effect in App()), after which it behaves like any
+// other program — except it stays locked against editing, because its
+// exercise rids are load-bearing for years of logged history.
 function builtinProgram() {
     const flat = flatRows(0);
     const diToDow = [1, 2, 3, 4, 5]; // Split 4.0's di 0-4 (Mon-Fri) -> real weekday 1-5
@@ -252,13 +259,23 @@ function builtinProgram() {
         const repRange = r.spec.includes(" x ") ? r.spec.split(" x ")[1] : r.spec;
         days[dow].exercises.push({ rid: r.rid, name: r.base, sets: r.sets, repRange });
     });
-    return { id: BUILTIN_ID, name: SPLITS[0].title, kind: "weekly", days };
+    return { id: BUILTIN_ID, name: SPLITS[0].title, kind: "weekly", days, locked: true };
+}
+// Rendered only so UI reading activeProgram.name/.kind has something safe to
+// show when nothing is scheduled or the user has no programs yet. It has no
+// exercises, so every date reads as a rest day rather than crashing.
+function emptyProgram() {
+    return { id: null, name: "No Program", kind: "weekly", days: DOW_NAMES.map((_, dow) => ({ dow, exercises: [] })), placeholder: true };
+}
+// Strict lookup — returns null when the program genuinely isn't there. Used
+// wherever "no program" must stay distinguishable from "some program".
+function findProgramById(programs, id) {
+    if (id === null || id === undefined)
+        return null;
+    return (programs || []).find((pp) => pp.id === id) || null;
 }
 function getActiveProgram(currentProgramId, programs) {
-    if (currentProgramId === BUILTIN_ID)
-        return builtinProgram();
-    const p = (programs || []).find((pp) => pp.id === currentProgramId);
-    return p || builtinProgram();
+    return findProgramById(programs, currentProgramId) || emptyProgram();
 }
 // ============================================================
 // PROGRAM BLOCKS MODULE (start) — safe to delete entirely: remove this
@@ -288,31 +305,28 @@ function resolveProgramForDate(programBlocks, programs, d) {
     const pid = resolveProgramIdForDate(programBlocks, dateKey(d));
     if (pid === null)
         return null;
-    return getActiveProgram(pid, programs);
+    // Strict: a block pointing at a program that no longer exists reads as a
+    // gap, not as some other program.
+    return findProgramById(programs, pid);
 }
 function pbProgramName(programs, pid) {
-    if (pid === BUILTIN_ID)
-        return SPLITS[0].title;
-    const p = (programs || []).find((pp) => pp.id === pid);
+    const p = findProgramById(programs, pid);
     return p ? p.name : "(deleted program)";
 }
 // Soft background tints used to band the calendar by which program governs
 // each date. Deliberately low-saturation so they sit behind the green
 // "logged" ring, the blue today border and the red cardio underline without
-// competing with any of them. Assigned by position (built-in always first,
-// then programs in list order) rather than by hashing the id — hashing
-// produced frequent collisions, which would make two different programs
-// share a band and defeat the point.
+// competing with any of them. Assigned by position in the programs list
+// rather than by hashing the id — hashing produced frequent collisions,
+// which would make two different programs share a band and defeat the point.
 const PB_TINTS = ["#EDF3FA", "#F4EFF8", "#EDF6F0", "#FBF2EC", "#F7F1E8", "#F0F2F6"];
 function pbTintForProgram(pid, programs) {
     if (pid === null || pid === undefined)
         return null;
-    if (pid === BUILTIN_ID)
-        return PB_TINTS[0];
     const idx = (programs || []).findIndex((p) => p.id === pid);
     if (idx < 0)
         return null;
-    return PB_TINTS[(idx + 1) % PB_TINTS.length];
+    return PB_TINTS[idx % PB_TINTS.length];
 }
 // ============================================================
 // PROGRAM BLOCKS MODULE (end)
@@ -1282,6 +1296,42 @@ function App() {
         }, 1200);
         return () => clearTimeout(t);
     }, []);
+    // ---- PROGRAM 0 MIGRATION (start) — additive, idempotent, and scoped
+    // strictly to accounts that already used the old hardcoded Split 4.0.
+    //
+    // Split 4.0 used to exist only in code, with id 0 baked into every entry
+    // key logged before multi-program support. Rather than rewrite those keys
+    // (which would put years of history at risk), this promotes it in place:
+    // the same id 0 becomes an ordinary row in the programs list. No entry is
+    // touched, copied, or rekeyed — the id never changes, so every existing
+    // key keeps resolving exactly as before.
+    //
+    // Guards, in order: runs once per mount; skips if program 0 already
+    // exists; skips if the user deleted it (tombstone); and skips entirely
+    // if there is no data under program 0 — which is what makes new users
+    // start with a genuinely empty programs list.
+    const p0MigratedRef = useRef(false);
+    useEffect(() => {
+        const t = setTimeout(() => {
+            if (p0MigratedRef.current)
+                return;
+            p0MigratedRef.current = true;
+            const st = stateRef.current;
+            const existing = st.programs || [];
+            if (existing.some((p) => p.id === BUILTIN_ID))
+                return; // already migrated
+            if ((st.deletedProgramIds || []).includes(BUILTIN_ID))
+                return; // user deleted it — respect that, don't resurrect
+            const en = st.entries || {};
+            const hasLegacyData = Object.keys(en).some((k) => k.indexOf(`wd|${BUILTIN_ID}|`) === 0 || k.indexOf(`rd|${BUILTIN_ID}|`) === 0);
+            if (!hasLegacyData)
+                return; // new user — leave the programs list empty
+            programsDirtyRef.current = true;
+            setPrograms((cur) => (cur.some((p) => p.id === BUILTIN_ID) ? cur : [builtinProgram(), ...cur]));
+        }, 1250);
+        return () => clearTimeout(t);
+    }, []);
+    // ---- PROGRAM 0 MIGRATION (end) ----
     // ---- PROGRAM BLOCKS: one-time migration (start) — additive only. If
     // no blocks exist yet, creates a single open-ended block for whatever
     // program was already active, starting from the earliest date it has
@@ -1296,8 +1346,16 @@ function App() {
             setProgramBlocks((cur) => {
                 if (cur.length > 0)
                     return cur;
-                const pid = stateRef.current.currentProgramId !== undefined ? stateRef.current.currentProgramId : BUILTIN_ID;
-                const en = stateRef.current.entries || {};
+                const st = stateRef.current;
+                const pid = st.currentProgramId !== undefined ? st.currentProgramId : BUILTIN_ID;
+                // Only meaningful if that program actually exists. A new user
+                // has no programs at all, and must not get a block pointing at
+                // a phantom one.
+                const progs = st.programs || [];
+                const exists = progs.some((p) => p.id === pid) || (pid === BUILTIN_ID && Object.keys(st.entries || {}).some((k) => k.indexOf(`wd|${BUILTIN_ID}|`) === 0));
+                if (!exists)
+                    return cur;
+                const en = st.entries || {};
                 const wPrefix = `wd|${pid}|`;
                 let earliest = null;
                 Object.keys(en).forEach((k) => {
@@ -2750,6 +2808,10 @@ React.createElement("div", null,
                         React.createElement("div", { style: { width: 14, height: 14, borderRadius: 4, background: x.tint, border: "1px solid #E0DACE" } }),
                         React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.ink } }, x.name)))));
                 })(),
+                programs.length === 0 && (React.createElement("div", { style: { marginTop: 14, padding: "16px 14px", border: "1px dashed #D8D1C5", borderRadius: 12, background: "#FAF8F5", textAlign: "center" } },
+                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 3 } }, "No programs yet"),
+                    React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4, marginBottom: 12 } }, "Add a workout program to start logging. Cardio and Body Composition work without one."),
+                    React.createElement("button", { onClick: () => { setMenuOpen(true); setAccountSubView("programs"); }, style: { padding: "10px 18px", border: "none", borderRadius: 10, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Add a Program"))),
                 gapNotice && (React.createElement("div", { style: { marginTop: 14, padding: "12px 14px", border: "1px solid #E7E1D7", borderRadius: 12, background: "#FAF8F5" } },
                     React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 2 } }, "No program scheduled"),
                     React.createElement("div", { style: { fontSize: 12.5, color: "#8C857B", lineHeight: 1.4, marginBottom: 10 } },
@@ -2782,21 +2844,17 @@ React.createElement("div", null,
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "My Programs"),
                     React.createElement("button", { onClick: () => { setMenuOpen(false); setAccountSubView(null); }, style: { width: 34, height: 34, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 16, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                 React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
-                    React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, overflow: "hidden", marginBottom: 10 } },
-                        React.createElement("div", { style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid #ECE7DE", background: "#fff" } },
-                            React.createElement("div", null,
-                                React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink } }, SPLITS[0].title),
-                                React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, "Built-in")),
-                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, flexShrink: 0 } },
-                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); setPbHistoryProgramId(BUILTIN_ID); setPbHistoryMonth(startOfMonth(new Date())); }, title: "View history", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDCC5"))),
+                    programs.length === 0 ? (React.createElement("div", { style: { border: "1px dashed #D8D1C5", borderRadius: 12, padding: "22px 16px", textAlign: "center", marginBottom: 10 } },
+                        React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "No programs yet"),
+                        React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4 } }, "Add one from a spreadsheet or build it here to start logging workouts."))) : (React.createElement("div", { style: { border: "1px solid #E7E1D7", borderRadius: 12, overflow: "hidden", marginBottom: 10 } },
                         programs.map((p, i) => (React.createElement("div", { key: p.id, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: i === programs.length - 1 ? "none" : "1px solid #ECE7DE", background: "#fff" } },
                             React.createElement("div", { style: { minWidth: 0, marginRight: 8 } },
                                 React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
-                                React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, p.kind === "weekly" ? "Weekly" : "Custom")),
+                                React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 1 } }, (p.kind === "weekly" ? "Weekly" : "Custom") + (p.locked ? " · locked" : ""))),
                             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, flexShrink: 0 } },
                                 React.createElement("button", { onClick: (e) => { e.stopPropagation(); setPbHistoryProgramId(p.id); setPbHistoryMonth(startOfMonth(new Date())); }, title: "View history", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDCC5"),
-                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); openBuilderForEdit(p); }, title: "Edit program", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\u270E"),
-                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); deleteProgram(p); }, title: "Delete program", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDDD1")))))),
+                                !p.locked && React.createElement("button", { onClick: (e) => { e.stopPropagation(); openBuilderForEdit(p); }, title: "Edit program", style: { border: "none", background: "transparent", color: "#8C857B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\u270E"),
+                                React.createElement("button", { onClick: (e) => { e.stopPropagation(); deleteProgram(p); }, title: "Delete program", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: 6, lineHeight: 1 } }, "\uD83D\uDDD1"))))))),
                     React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
                         React.createElement("label", { style: { flex: 1, display: "block", padding: 12, border: "1px dashed #D8D1C5", borderRadius: 11, textAlign: "center", fontSize: 12.5, fontWeight: 700, color: C.a, cursor: "pointer" } },
                             "Add From File",
@@ -2994,7 +3052,6 @@ React.createElement("div", null,
                 React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: 16 } },
                     React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 6 } }, "PROGRAM TO ANALYZE"),
                     React.createElement("select", { value: axProgramId, onChange: (e) => setAxProgramId(e.target.value === String(BUILTIN_ID) ? BUILTIN_ID : e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 12 } },
-                        React.createElement("option", { value: BUILTIN_ID }, SPLITS[0].title),
                         programs.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.name))),
                     React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.45, color: "#8C857B", margin: "0 0 14px" } },
                         "This is your last ",
@@ -3030,7 +3087,6 @@ React.createElement("div", null,
                 React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } }, "SWITCH PROGRAM"),
                 React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.4, color: "#8C857B", margin: "0 0 10px" } }, "Starts a new block for the selected program from the chosen date onward, and automatically ends whatever block is currently running."),
                 React.createElement("select", { value: pbSwitchProgramId, onChange: (e) => setPbSwitchProgramId(e.target.value === String(BUILTIN_ID) ? BUILTIN_ID : e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 8 } },
-                    React.createElement("option", { value: BUILTIN_ID }, SPLITS[0].title),
                     programs.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.name))),
                 React.createElement("input", { type: "date", value: pbSwitchStartDate, onChange: (e) => setPbSwitchStartDate(e.target.value), placeholder: "Today", style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, marginBottom: 10 } }),
                 React.createElement("button", { onClick: switchProgram, style: { width: "100%", padding: 12, border: "none", borderRadius: 11, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "Switch Program"),
@@ -3048,7 +3104,6 @@ React.createElement("div", null,
                 React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, margin: "20px 0 8px" } }, "ADD A HISTORICAL BLOCK"),
                 React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.4, color: "#8C857B", margin: "0 0 10px" } }, "For backdating an exact range, e.g. a program you ran in the past. Must have both a start and end date."),
                 React.createElement("select", { value: pbHistProgramId, onChange: (e) => setPbHistProgramId(e.target.value === String(BUILTIN_ID) ? BUILTIN_ID : e.target.value), style: { width: "100%", boxSizing: "border-box", padding: "11px 12px", border: "1px solid #E7E1D7", borderRadius: 11, fontFamily: "inherit", fontSize: 14, color: "#26221D", marginBottom: 8 } },
-                    React.createElement("option", { value: BUILTIN_ID }, SPLITS[0].title),
                     programs.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.name))),
                 React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
                     React.createElement("div", { style: { flex: 1 } },
