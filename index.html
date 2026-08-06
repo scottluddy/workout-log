@@ -494,6 +494,10 @@ function migrateLegacyEntries(entries) {
 //   reps went up   -> green
 //   reps unchanged -> yellow
 //   reps went down -> red
+// When the weight INCREASED, the load is itself the progression, so a
+// rep-for-rep comparison against a lighter session would be misleading.
+// In that case exactly one cell turns green — the final set — and only once
+// every set has cleared the rep-range floor. Weight decreases go uncolored.
 const REP_COLOR_BG = { green: "#E3F5E7", yellow: "#FFF6D8", red: "#FDE7E5" };
 // Finds the date of the previous occurrence of the same workout. For weekly
 // programs that's simply 7 days earlier (Monday compares to last Monday).
@@ -511,12 +515,13 @@ function findPrevSessionKey(entries, program, dk) {
         return null;
     return findAdjacentSameDayType(entries, program.id, dk, dtId, -1);
 }
-function computeRepColor(entries, program, dk, rid, si) {
+function computeRepColor(entries, program, dk, ex, si) {
     if (!COLOR_CODE_ENABLED)
         return null;
-    if (!program)
+    if (!program || !ex)
         return null;
     const programId = program.id;
+    const rid = ex.rid;
     const prevKey = findPrevSessionKey(entries, program, dk);
     if (!prevKey)
         return null;
@@ -525,8 +530,30 @@ function computeRepColor(entries, program, dk, rid, si) {
     if (!wCur || !wPrev)
         return null;
     const wCurNum = parseFloat(wCur), wPrevNum = parseFloat(wPrev);
-    if (isNaN(wCurNum) || isNaN(wPrevNum) || wCurNum !== wPrevNum)
+    if (isNaN(wCurNum) || isNaN(wPrevNum))
         return null;
+    // Weight went UP — the load itself is the progression, so a rep-by-rep
+    // comparison against a lighter session isn't meaningful. Credit it once,
+    // on the final set, and only once every set has cleared the rep-range
+    // floor (i.e. the new weight was handled across the whole exercise, not
+    // just held onto for a set or two).
+    if (wCurNum > wPrevNum) {
+        const range = ptParseRange(ex.repRange);
+        if (!range)
+            return null;
+        const nSets = Math.max(1, ex.sets || 1);
+        for (let i = 0; i < nSets; i++) {
+            const rv = entries[`rd|${programId}|${dk}|${rid}|${i}`];
+            const n = rv ? parseInt(rv, 10) : NaN;
+            if (isNaN(n) || n < range.floor)
+                return null; // not all sets cleared the floor (yet)
+        }
+        return si === nSets - 1 ? "green" : null;
+    }
+    // Weight went DOWN — no comparison worth drawing.
+    if (wCurNum !== wPrevNum)
+        return null;
+    // Same weight — the original set-by-set comparison.
     const rCur = entries[`rd|${programId}|${dk}|${rid}|${si}`];
     const rPrev = entries[`rd|${programId}|${prevKey}|${rid}|${si}`];
     if (!rCur || !rPrev)
@@ -2620,7 +2647,7 @@ function App() {
                 const wKey = `wd|${activeProgram.id}|${focusedDate}|${r.rid}`;
                 const reps = [0, 1, 2, 3, 4].map((si) => {
                     if (si < r.sets) {
-                        const repColor = computeRepColor(entries, activeProgram, focusedDate, r.rid, si);
+                        const repColor = computeRepColor(entries, activeProgram, focusedDate, r, si);
                         return (React.createElement("div", { key: "fr" + si, style: { flex: `0 0 ${fDims.R}px`, width: fDims.R, borderBottom: cellBorder, borderRight: cellBorder, background: repColor ? REP_COLOR_BG[repColor] : "#fff", padding: "5px 3px", display: "flex" } },
                             React.createElement(Input, { value: entries[`rd|${activeProgram.id}|${focusedDate}|${r.rid}|${si}`], onChange: (e) => setEntry(`rd|${activeProgram.id}|${focusedDate}|${r.rid}|${si}`, e.target.value, "rep") })));
                     }
