@@ -759,7 +759,22 @@ function ptHeadline(plan) {
 // A day where nothing qualifies returns null (no colour) rather than 0%,
 // so "rest day" never looks like "total failure".
 const PROGRESS_TRACKER_ENABLED = true;
+// Some exercises aren't reliably countable — reps get estimated, partials
+// creep in, and "did it progress?" becomes noise rather than signal. They're
+// excluded from BOTH the monthly grade and the per-exercise table, on
+// purpose: scoring them in one view and not the other would let the two
+// disagree about the same session. Matched case-insensitively on the
+// exercise name, so it catches them wherever they appear in a program.
+const PROG_EXCLUDED_EXERCISES = ["abs", "calves"];
+function progExerciseCounts(name) {
+    const n = String(name || "").trim().toLowerCase();
+    if (!n)
+        return false;
+    return PROG_EXCLUDED_EXERCISES.indexOf(n) < 0;
+}
 function progExerciseEligible(entries, program, dk, ex) {
+    if (!progExerciseCounts(ex.name))
+        return false;
     const prevKey = findPrevSessionKey(entries, program, dk);
     if (!prevKey)
         return false;
@@ -881,13 +896,10 @@ function progMonthSummary(states) {
         sweeps: rated.filter((r) => r.pct === 100).length,
     };
 }
-// Per-exercise view. Aggregated by exercise NAME rather than rid, so the
-// same lift tracked across several days of the week (or across programs)
-// rolls into one row — which is how you'd actually ask "is my incline press
-// moving?". Windowed rather than all-time on purpose: over long spans the
-// variation, tempo and set count drift enough that a lifetime percentage
-// would be averaging things that aren't really the same exercise.
-const PROG_EXERCISE_WINDOW_DAYS = 90;
+// Per-exercise view, scoped to a Program Block. Blocks are the natural unit
+// here: within one the program is fixed, so an exercise is genuinely the same
+// exercise throughout — which is exactly the comparability problem a rolling
+// window couldn't solve.
 const PROG_EX_BANDS = [
     { min: 80, bar: "#1F7A4D", ink: "#1F7A4D", label: "80%+" },
     { min: 60, bar: "#E8C877", ink: "#8A6D1B", label: "60–79%" },
@@ -899,30 +911,58 @@ function progExBandFor(pct) {
         return null;
     return PROG_EX_BANDS.find((b) => pct >= b.min) || PROG_EX_BANDS[PROG_EX_BANDS.length - 1];
 }
-function progExerciseBreakdown(entries, programBlocks, programs, endDate, windowDays) {
-    const days = windowDays || PROG_EXERCISE_WINDOW_DAYS;
+// Oldest first, so "Prev" walks back through training history in the order
+// it actually happened.
+function progSortedBlocks(programBlocks) {
+    return (programBlocks || []).slice().sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+}
+// The block covering today, else the most recent one — so the view opens on
+// what you're currently running.
+function progCurrentBlockIndex(sorted, todayKey) {
+    const i = (sorted || []).findIndex((b) => todayKey >= b.startDate && (!b.endDate || todayKey <= b.endDate));
+    if (i >= 0)
+        return i;
+    return sorted && sorted.length ? sorted.length - 1 : -1;
+}
+// An open-ended block is only scored up to today; there's nothing to count in
+// the future, and running to a sentinel end date would just waste the loop.
+function progBlockRange(block, todayKey) {
+    if (!block)
+        return null;
+    const end = block.endDate && block.endDate < todayKey ? block.endDate : todayKey;
+    if (end < block.startDate)
+        return null;
+    return { startKey: block.startDate, endKey: end };
+}
+function progExerciseBreakdownRange(entries, programBlocks, programs, startKey, endKey) {
     const byName = {};
-    for (let i = 0; i < days; i++) {
-        const d = addDays(endDate, -i);
+    if (!startKey || !endKey || endKey < startKey)
+        return [];
+    let d = keyToDate(startKey);
+    const end = keyToDate(endKey);
+    let guard = 0;
+    while (d <= end && guard < 3000) {
+        guard++;
         const program = resolveProgramForDate(programBlocks, programs, d);
-        if (!program)
-            continue;
-        const dk = dateKey(d);
-        const exs = exercisesForDate(program, entries, d);
-        if (!exs || !exs.length)
-            continue;
-        exs.forEach((ex) => {
-            if (!progExerciseEligible(entries, program, dk, ex))
-                return;
-            const key = String(ex.name || "").trim();
-            if (!key)
-                return;
-            if (!byName[key])
-                byName[key] = { name: key, sessions: 0, progressed: 0 };
-            byName[key].sessions++;
-            if (progExerciseProgressed(entries, program, dk, ex))
-                byName[key].progressed++;
-        });
+        if (program) {
+            const dk = dateKey(d);
+            const exs = exercisesForDate(program, entries, d);
+            if (exs && exs.length) {
+                exs.forEach((ex) => {
+                    if (!progExerciseEligible(entries, program, dk, ex))
+                        return;
+                    const key = String(ex.name || "").trim();
+                    if (!key)
+                        return;
+                    if (!byName[key])
+                        byName[key] = { name: key, sessions: 0, progressed: 0 };
+                    byName[key].sessions++;
+                    if (progExerciseProgressed(entries, program, dk, ex))
+                        byName[key].progressed++;
+                });
+            }
+        }
+        d = addDays(d, 1);
     }
     return Object.keys(byName).map((k) => {
         const r = byName[k];
@@ -1415,6 +1455,7 @@ function App() {
     const [progView, setProgView] = useState(null); // null | "main"
     const [progMonth, setProgMonth] = useState(null); // Date | null
     const [progTab, setProgTab] = useState("month"); // "month" | "exercise"
+    const [progBlockIdx, setProgBlockIdx] = useState(null); // null = follow the current block
     const [ptOpen, setPtOpen] = useState(false);
     const [ptExIdx, setPtExIdx] = useState(0);
     // ---- PERSONAL TRAINER state (end) ----
@@ -3602,17 +3643,29 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                             React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#F0EDE8" } }),
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted } }, "Rest day or upcoming")))))) : (() => {
-                const list = progExerciseBreakdown(entries, programBlocks, programs, todayD, PROG_EXERCISE_WINDOW_DAYS);
-                return (React.createElement("div", null,
+                const sortedBlocks = progSortedBlocks(programBlocks);
+                const curIdx = progCurrentBlockIndex(sortedBlocks, todayKey);
+                const idx = progBlockIdx === null ? curIdx : Math.max(0, Math.min(sortedBlocks.length - 1, progBlockIdx));
+                const block = idx >= 0 ? sortedBlocks[idx] : null;
+                const range = progBlockRange(block, todayKey);
+                const list = range ? progExerciseBreakdownRange(entries, programBlocks, programs, range.startKey, range.endKey) : [];
+                const fmt = (k) => { const d = keyToDate(k); return MONTH_NAMES[d.getMonth()].slice(0, 3) + " " + d.getDate() + ", " + d.getFullYear(); };
+                return (React.createElement("div", null, sortedBlocks.length === 0 ? (React.createElement("div", { style: { margin: "0 16px", padding: "26px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
+                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "No program blocks yet"),
+                    React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4 } }, "Set up a schedule under My Programs to track progress by block."))) : (React.createElement("div", null,
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "0 16px", marginBottom: 12 } },
+                        React.createElement("button", { onClick: () => setProgBlockIdx(Math.max(0, idx - 1)), disabled: idx <= 0, style: { padding: "10px 14px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 13, fontWeight: 700, color: idx <= 0 ? "#D8D1C5" : "#5E574C", cursor: idx <= 0 ? "default" : "pointer", fontFamily: "inherit" } }, "Prev"),
+                        React.createElement("div", { style: { textAlign: "center", minWidth: 0 } },
+                            React.createElement("div", { style: { fontSize: 14.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, block ? pbProgramName(programs, block.programId) : "—"),
+                            React.createElement("div", { style: { fontSize: 10.5, fontWeight: 600, color: C.muted, marginTop: 2 } }, block ? fmt(block.startDate) + " – " + (block.endDate ? fmt(block.endDate) : "ongoing") : "")),
+                        React.createElement("button", { onClick: () => setProgBlockIdx(Math.min(sortedBlocks.length - 1, idx + 1)), disabled: idx >= sortedBlocks.length - 1, style: { padding: "10px 14px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 13, fontWeight: 700, color: idx >= sortedBlocks.length - 1 ? "#D8D1C5" : "#5E574C", cursor: idx >= sortedBlocks.length - 1 ? "default" : "pointer", fontFamily: "inherit" } }, "Next")),
                     React.createElement("div", { style: { padding: "0 16px", marginBottom: 14 } },
-                        React.createElement("div", { style: { fontSize: 17, fontWeight: 800, color: C.ink } }, "By Exercise"),
-                        React.createElement("div", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted, marginTop: 3, lineHeight: 1.4 } },
-                            "Share of sessions where each exercise progressed \u00B7 last ",
-                            PROG_EXERCISE_WINDOW_DAYS,
-                            " days")),
+                        React.createElement("div", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted, lineHeight: 1.4 } },
+                            "Share of sessions in this block where each exercise progressed",
+                            idx === curIdx ? " · current block" : "")),
                     list.length === 0 ? (React.createElement("div", { style: { margin: "0 16px", padding: "26px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
                         React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "Nothing to compare yet"),
-                        React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4 } }, "An exercise appears here once it's been logged in at least two sessions."))) : (React.createElement("div", { style: { padding: "0 16px" } },
+                        React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4 } }, "An exercise appears once it's been logged in at least two sessions within this block."))) : (React.createElement("div", { style: { padding: "0 16px" } },
                         React.createElement("div", { style: { borderTop: "1px solid " + C.line } }, list.map((r) => {
                             const b = progExBandFor(r.pct);
                             return (React.createElement("div", { key: r.name, style: { display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: "1px solid " + C.line } },
@@ -3633,7 +3686,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                         React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 14 } }, PROG_EX_BANDS.map((b) => (React.createElement("div", { key: b.label, style: { display: "flex", alignItems: "center", gap: 6 } },
                             React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: b.bar } }),
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, b.label))))),
-                        React.createElement("p", { style: { fontSize: 11.5, lineHeight: 1.45, color: C.muted, margin: "12px 0 0" } }, "Windowed rather than all-time on purpose \u2014 over longer spans, changes in variation, tempo and set count make an exercise less comparable to its former self.")))));
+                        React.createElement("p", { style: { fontSize: 11.5, lineHeight: 1.45, color: C.muted, margin: "12px 0 0" } }, "Scoped to one block so the program stays fixed \u2014 an exercise is compared only against itself under the same setup. Abs and Calves are left out.")))))));
             })())));
     })()),
             moduleOn(enabledModules, "cardio") && cardioView === "main" && (() => {
