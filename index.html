@@ -836,6 +836,100 @@ function progDayState(entries, programBlocks, programs, d, todayKey) {
 // Bands are deliberately coarse. Under the one-rep-per-exercise rule a clean
 // session scores 100%, so the flat top band is the expected state and the
 // dips carry all the signal.
+// A session counts as a "Plus Day" at or above this share of its exercises
+// progressing. Deliberately demanding: under the one-rep-per-exercise rule a
+// clean session is 100%, so 80% means at most one exercise stalled.
+const PROG_PLUS_DAY_MIN = 80;
+// Month grade is POOLED — total exercises progressed over total eligible —
+// rather than an average of per-session percentages. The two are identical
+// only when every session has the same number of eligible exercises, which
+// isn't true here (day types differ in size, and first-time or unlogged
+// exercises drop out of the denominator). Pooling weights every exercise
+// equally, which matches "Any Progress Every Exercise Wins the Workout";
+// averaging session rates would let a 2-exercise day count as heavily as a
+// 5-exercise one.
+const PROG_GRADES = [
+    { min: 90, letter: "A" },
+    { min: 80, letter: "B" },
+    { min: 70, letter: "C" },
+    { min: 60, letter: "D" },
+    { min: 0, letter: "F" },
+];
+function progGradeFor(pct) {
+    if (pct === null || pct === undefined)
+        return null;
+    return (PROG_GRADES.find((g) => pct >= g.min) || PROG_GRADES[PROG_GRADES.length - 1]).letter;
+}
+// Rolls a month's day-states into the three complementary readings:
+// pooled grade (overall completeness), plus days (consistency), and clean
+// sweeps (perfection). Returns null when no session in the month produced a
+// reading, so an untrained month shows "—" rather than an F.
+function progMonthSummary(states) {
+    const rated = (states || []).filter((s) => s && s.kind === "rated").map((s) => s.rate);
+    if (!rated.length)
+        return null;
+    const totalProgressed = rated.reduce((a, r) => a + r.progressed, 0);
+    const totalEligible = rated.reduce((a, r) => a + r.total, 0);
+    const pct = totalEligible ? Math.round((totalProgressed / totalEligible) * 100) : 0;
+    return {
+        sessions: rated.length,
+        totalProgressed,
+        totalEligible,
+        pct,
+        grade: progGradeFor(pct),
+        plusDays: rated.filter((r) => r.pct >= PROG_PLUS_DAY_MIN).length,
+        sweeps: rated.filter((r) => r.pct === 100).length,
+    };
+}
+// Per-exercise view. Aggregated by exercise NAME rather than rid, so the
+// same lift tracked across several days of the week (or across programs)
+// rolls into one row — which is how you'd actually ask "is my incline press
+// moving?". Windowed rather than all-time on purpose: over long spans the
+// variation, tempo and set count drift enough that a lifetime percentage
+// would be averaging things that aren't really the same exercise.
+const PROG_EXERCISE_WINDOW_DAYS = 90;
+const PROG_EX_BANDS = [
+    { min: 80, bar: "#1F7A4D", ink: "#1F7A4D", label: "80%+" },
+    { min: 60, bar: "#E8C877", ink: "#8A6D1B", label: "60–79%" },
+    { min: 40, bar: "#E39A6B", ink: "#B85C22", label: "40–59%" },
+    { min: 0, bar: "#D9645C", ink: "#C0392B", label: "under 40%" },
+];
+function progExBandFor(pct) {
+    if (pct === null || pct === undefined)
+        return null;
+    return PROG_EX_BANDS.find((b) => pct >= b.min) || PROG_EX_BANDS[PROG_EX_BANDS.length - 1];
+}
+function progExerciseBreakdown(entries, programBlocks, programs, endDate, windowDays) {
+    const days = windowDays || PROG_EXERCISE_WINDOW_DAYS;
+    const byName = {};
+    for (let i = 0; i < days; i++) {
+        const d = addDays(endDate, -i);
+        const program = resolveProgramForDate(programBlocks, programs, d);
+        if (!program)
+            continue;
+        const dk = dateKey(d);
+        const exs = exercisesForDate(program, entries, d);
+        if (!exs || !exs.length)
+            continue;
+        exs.forEach((ex) => {
+            if (!progExerciseEligible(entries, program, dk, ex))
+                return;
+            const key = String(ex.name || "").trim();
+            if (!key)
+                return;
+            if (!byName[key])
+                byName[key] = { name: key, sessions: 0, progressed: 0 };
+            byName[key].sessions++;
+            if (progExerciseProgressed(entries, program, dk, ex))
+                byName[key].progressed++;
+        });
+    }
+    return Object.keys(byName).map((k) => {
+        const r = byName[k];
+        r.pct = r.sessions ? Math.round((r.progressed / r.sessions) * 100) : 0;
+        return r;
+    }).sort((a, b) => (b.pct - a.pct) || (b.sessions - a.sessions) || a.name.localeCompare(b.name));
+}
 const PROG_BANDS = [
     { min: 100, fill: "#1F7A4D", ink: "#FFFFFF", label: "100%" },
     { min: 80, fill: "#5FB985", ink: "#FFFFFF", label: "80–99%" },
@@ -1320,6 +1414,7 @@ function App() {
     // ---- PERSONAL TRAINER state (start) ----
     const [progView, setProgView] = useState(null); // null | "main"
     const [progMonth, setProgMonth] = useState(null); // Date | null
+    const [progTab, setProgTab] = useState("month"); // "month" | "exercise"
     const [ptOpen, setPtOpen] = useState(false);
     const [ptExIdx, setPtExIdx] = useState(0);
     // ---- PERSONAL TRAINER state (end) ----
@@ -3426,15 +3521,19 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
         const todayD = new Date();
         const todayKey = dateKey(todayD);
         const states = cells.map((c) => (c.inMonth ? progDayState(entries, programBlocks, programs, c.date, todayKey) : { kind: "off" }));
-        const rated = states.filter((s) => s.kind === "rated").map((s) => s.rate);
-        const plusDays = rated.filter((r) => r.progressed > 0).length;
-        const sweeps = rated.filter((r) => r.pct === 100).length;
+        const summary = progMonthSummary(states);
+        const tabs = [{ id: "month", label: "Monthly" }, { id: "exercise", label: "By Exercise" }];
         return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 33, background: "#fff", display: "flex", flexDirection: "column" } },
-            React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
-                React.createElement("button", { onClick: () => setProgView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
-                React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Progress Tracker"),
-                React.createElement("div", { style: { width: 66 } })),
-            React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: "16px 0 24px" } },
+            React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 0", borderBottom: "1px solid #ECE7DE", flexShrink: 0 } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 } },
+                    React.createElement("button", { onClick: () => setProgView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                    React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Progress Tracker"),
+                    React.createElement("div", { style: { width: 66 } })),
+                React.createElement("div", { style: { display: "flex", gap: 24 } }, tabs.map((tb) => {
+                    const on = progTab === tb.id;
+                    return (React.createElement("button", { key: tb.id, onClick: () => setProgTab(tb.id), style: { border: "none", background: "transparent", padding: "0 0 10px", fontFamily: "inherit", fontSize: 13.5, fontWeight: on ? 800 : 600, color: on ? "#1F7A4D" : C.muted, cursor: "pointer", borderBottom: on ? "2.5px solid #1F7A4D" : "2.5px solid transparent", marginBottom: -1 } }, tb.label));
+                }))),
+            React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: "16px 0 24px" } }, progTab === "month" ? (React.createElement("div", null,
                 React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", marginBottom: 14 } },
                     React.createElement("button", { onClick: () => setProgMonth(addDays(startOfMonth(month), -1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
                     React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } },
@@ -3442,14 +3541,29 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                         " ",
                         month.getFullYear()),
                     React.createElement("button", { onClick: () => setProgMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Next")),
+                React.createElement("div", { style: { padding: "0 16px", marginBottom: 12 } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", border: "1px solid #E7E1D7", borderRadius: 14, background: "#FAF8F5" } },
+                        React.createElement("div", { style: { width: 58, height: 58, borderRadius: 14, background: summary ? "#1F7A4D" : "#E7E1D7", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                            React.createElement("div", { style: { fontSize: 30, fontWeight: 800, color: "#fff", lineHeight: 1 } }, summary ? summary.grade : "—")),
+                        React.createElement("div", { style: { minWidth: 0 } },
+                            React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".06em", color: C.muted } }, "MONTH GRADE"),
+                            React.createElement("div", { style: { fontSize: 17, fontWeight: 800, color: C.ink, marginTop: 2 } }, summary ? summary.pct + "%" : "No sessions yet"),
+                            summary && React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 2 } },
+                                summary.totalProgressed,
+                                " of ",
+                                summary.totalEligible,
+                                " exercises progressed")))),
                 React.createElement("div", { style: { display: "flex", gap: 10, padding: "0 16px", marginBottom: 18 } },
                     React.createElement("div", { style: { flex: 1, padding: "12px 10px", border: "1px solid #E7E1D7", borderRadius: 12, textAlign: "center" } },
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".05em", color: C.muted, marginBottom: 4 } }, "PLUS DAYS"),
-                        React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: "#1F7A4D" } }, rated.length ? `${plusDays}/${rated.length}` : "—"),
-                        React.createElement("div", { style: { fontSize: 10, color: C.muted, marginTop: 2 } }, "sessions with progress")),
+                        React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: "#1F7A4D" } }, summary ? summary.plusDays + "/" + summary.sessions : "—"),
+                        React.createElement("div", { style: { fontSize: 10, color: C.muted, marginTop: 2 } },
+                            "sessions at ",
+                            PROG_PLUS_DAY_MIN,
+                            "%+")),
                     React.createElement("div", { style: { flex: 1, padding: "12px 10px", border: "1px solid #E7E1D7", borderRadius: 12, textAlign: "center" } },
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".05em", color: C.muted, marginBottom: 4 } }, "CLEAN SWEEPS"),
-                        React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: C.ink } }, rated.length ? `${sweeps}/${rated.length}` : "—"),
+                        React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: C.ink } }, summary ? summary.sweeps + "/" + summary.sessions : "—"),
                         React.createElement("div", { style: { fontSize: 10, color: C.muted, marginTop: 2 } }, "every exercise"))),
                 React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", padding: "0 16px", marginBottom: 6 } }, WEEKDAY_LETTERS.map((d, i) => React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, d))),
                 React.createElement("div", { style: { padding: "0 16px" } },
@@ -3473,12 +3587,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                             ink = "#CFC8BC";
                             weight = 500;
                         }
-                        return (React.createElement("div", { key: ci, title: st.kind === "rated" ? `${st.rate.pct}% — ${st.rate.progressed} of ${st.rate.total} progressed` : "", style: {
-                                aspectRatio: "1 / 1",
-                                background: bg,
-                                display: "flex", alignItems: "center", justifyContent: "center",
-                                boxShadow: isToday && cell.inMonth ? `inset 0 0 0 2.5px ${TODAY_BLUE}` : "none",
-                            } },
+                        return (React.createElement("div", { key: ci, title: st.kind === "rated" ? st.rate.pct + "% — " + st.rate.progressed + " of " + st.rate.total + " progressed" : "", style: { aspectRatio: "1 / 1", background: bg, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: isToday && cell.inMonth ? "inset 0 0 0 2.5px " + TODAY_BLUE : "none" } },
                             React.createElement("div", { style: { fontSize: 13.5, fontWeight: weight, color: ink, lineHeight: 1 } }, cell.date.getDate())));
                     })))))),
                 React.createElement("div", { style: { padding: "18px 16px 0" } },
@@ -3486,14 +3595,46 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                     React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 12 } }, PROG_BANDS.map((b) => (React.createElement("div", { key: b.label, style: { display: "flex", alignItems: "center", gap: 6 } },
                         React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: b.fill } }),
                         React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, b.label))))),
-                    React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                    React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, paddingTop: 10, borderTop: "1px solid " + C.line } },
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                             React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#FFFFFF", border: "1px solid #E0DACE" } }),
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "No reading")),
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                             React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#F0EDE8" } }),
-                            React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted } }, "Rest day or upcoming"))),
-                    React.createElement("p", { style: { fontSize: 11.5, lineHeight: 1.45, color: C.muted, margin: "12px 0 0" } }, "An exercise counts as progressed if any set turned green, including a weight increase where every set cleared the rep-range floor. Finishers and first-time exercises aren't counted.")))));
+                            React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted } }, "Rest day or upcoming")))))) : (() => {
+                const list = progExerciseBreakdown(entries, programBlocks, programs, todayD, PROG_EXERCISE_WINDOW_DAYS);
+                return (React.createElement("div", null,
+                    React.createElement("div", { style: { padding: "0 16px", marginBottom: 14 } },
+                        React.createElement("div", { style: { fontSize: 17, fontWeight: 800, color: C.ink } }, "By Exercise"),
+                        React.createElement("div", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted, marginTop: 3, lineHeight: 1.4 } },
+                            "Share of sessions where each exercise progressed \u00B7 last ",
+                            PROG_EXERCISE_WINDOW_DAYS,
+                            " days")),
+                    list.length === 0 ? (React.createElement("div", { style: { margin: "0 16px", padding: "26px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
+                        React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "Nothing to compare yet"),
+                        React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4 } }, "An exercise appears here once it's been logged in at least two sessions."))) : (React.createElement("div", { style: { padding: "0 16px" } },
+                        React.createElement("div", { style: { borderTop: "1px solid " + C.line } }, list.map((r) => {
+                            const b = progExBandFor(r.pct);
+                            return (React.createElement("div", { key: r.name, style: { display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: "1px solid " + C.line } },
+                                React.createElement("div", { style: { flex: "1 1 0", minWidth: 0 } },
+                                    React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.name),
+                                    React.createElement("div", { style: { fontSize: 10, fontWeight: 600, color: C.muted, marginTop: 2 } },
+                                        r.progressed,
+                                        " of ",
+                                        r.sessions,
+                                        " sessions")),
+                                React.createElement("div", { style: { flex: "0 0 96px" } },
+                                    React.createElement("div", { style: { height: 10, borderRadius: 5, background: "#F1EDE6", overflow: "hidden" } },
+                                        React.createElement("div", { style: { height: "100%", width: Math.max(3, r.pct) + "%", background: b.bar, borderRadius: 5 } }))),
+                                React.createElement("div", { style: { flex: "0 0 42px", textAlign: "right", fontSize: 13, fontWeight: 800, color: b.ink } },
+                                    r.pct,
+                                    "%")));
+                        })),
+                        React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 14 } }, PROG_EX_BANDS.map((b) => (React.createElement("div", { key: b.label, style: { display: "flex", alignItems: "center", gap: 6 } },
+                            React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: b.bar } }),
+                            React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, b.label))))),
+                        React.createElement("p", { style: { fontSize: 11.5, lineHeight: 1.45, color: C.muted, margin: "12px 0 0" } }, "Windowed rather than all-time on purpose \u2014 over longer spans, changes in variation, tempo and set count make an exercise less comparable to its former self.")))));
+            })())));
     })()),
             moduleOn(enabledModules, "cardio") && cardioView === "main" && (() => {
                 const progression = cardioWeekProgression(cardioSessions);
