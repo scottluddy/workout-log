@@ -9,6 +9,13 @@
 <meta name="apple-mobile-web-app-title" content="Workout Log">
 <meta name="application-name" content="Workout Log">
 <meta name="theme-color" content="#FFFFFF">
+<!-- Ask the browser not to hold a stale copy of this file. iOS honours these
+     inconsistently for Home Screen web apps, which is why the app also has a
+     "Reload App" action that cache-busts with a query string — that's the part
+     to actually rely on. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.png">
 <title>Workout Log</title>
@@ -2455,6 +2462,20 @@ function App() {
         setCardioDeletedSessionIds((cur) => cur.includes(id) ? cur : [...cur, id]);
     };
     // ---- CARDIO handlers + effects (end) ----
+    // Home Screen web apps on iOS cache the HTML aggressively and give the
+    // user no address bar to pull-to-refresh from, so an uploaded update can
+    // sit invisible for a long time. Navigating to the same page with a
+    // throwaway query string sidesteps the cache outright rather than asking
+    // the browser nicely — the query string is not persisted, so launching
+    // from the Home Screen icon afterwards still uses the clean URL.
+    const reloadApp = () => {
+        try {
+            location.replace(location.origin + location.pathname + "?v=" + Date.now());
+        }
+        catch (e) {
+            location.reload();
+        }
+    };
     // ---- MOBILITY handlers ----
     const mobilityAddModality = () => {
         const name = window.prompt("Name of the drill (e.g. Hip Openers)");
@@ -3277,7 +3298,8 @@ React.createElement("div", null,
                         { key: "sync", title: "Account & Sync", subtitle: user ? user.email : "Not signed in" },
                         { key: "modules", title: "Modules", subtitle: (() => { const on = MODULES.filter((m) => m.available() && moduleOn(enabledModules, m.id)).length; const tot = MODULES.filter((m) => m.available()).length; return `${on} of ${tot} turned on`; })() },
                         { key: "backup", title: "Backup & Restore", subtitle: "Export or restore your data" },
-                    ].map((row, i) => (React.createElement("button", { key: row.key, onClick: () => { setAccountSubView(row.key); setStatus(""); setRestoreText(""); setProgramStatus(""); }, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 4px", border: "none", borderTop: i === 0 ? "none" : "1px solid #ECE7DE", background: "transparent", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
+                        { key: "reload", title: "Reload App", subtitle: "Fetch the newest version from the server", action: reloadApp },
+                    ].map((row, i) => (React.createElement("button", { key: row.key, onClick: () => { if (row.action) { row.action(); return; } setAccountSubView(row.key); setStatus(""); setRestoreText(""); setProgramStatus(""); }, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 4px", border: "none", borderTop: i === 0 ? "none" : "1px solid #ECE7DE", background: "transparent", fontFamily: "inherit", cursor: "pointer", textAlign: "left" } },
                         React.createElement("div", { style: { minWidth: 0 } },
                             React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, color: C.ink } }, row.title),
                             React.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, row.subtitle)),
