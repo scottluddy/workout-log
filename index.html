@@ -846,6 +846,9 @@ function progCardioWeekMap(cardioSessions) {
 // Cardio weeks falling inside a block, and how many hit target. A week is
 // counted by its Sunday start, so a block beginning mid-week doesn't claim a
 // week that was mostly run under the previous block.
+// Smallest sample the cardio percentage is allowed to be computed over. Below
+// this, a single week swings the number too far to mean anything.
+const PROG_CARDIO_MIN_WEEKS = 6;
 function progCardioBlockStats(cardioSessions, startKey, endKey) {
     if (!FEATURE_CARDIO || !startKey || !endKey)
         return null;
@@ -860,11 +863,51 @@ function progCardioBlockStats(cardioSessions, startKey, endKey) {
         if (s && s.durationSec >= CARDIO_FLOOR_SEC)
             weekHasActivity[cardioWeekStartKey(keyToDate(s.date))] = true;
     });
-    const inRange = cardioWeekProgression(cardioSessions).filter((w) => w.weekKey >= startKey && w.weekKey <= endKey && weekHasActivity[w.weekKey]);
-    if (!inRange.length)
+    // Count a week if it OVERLAPS the block at all, not if its Sunday start
+    // falls inside it. Blocks routinely begin mid-week (a Monday switch is the
+    // normal case), and the strict-start rule silently dropped the whole first
+    // week even when every session in it belonged to the new block.
+    //
+    // The week currently in progress is a special case: it hasn't failed, it
+    // just isn't finished. Counting it as a miss would drag the percentage
+    // down mid-week and then silently repair itself later. So an unfinished
+    // week only counts once its target is already met — a hit is credited
+    // immediately, a not-yet is simply not counted.
+    const currentWeekKey = cardioWeekStartKey(new Date());
+    const eligible = cardioWeekProgression(cardioSessions).filter((w) => {
+        if (!weekHasActivity[w.weekKey])
+            return false;
+        if (w.weekKey === currentWeekKey && !w.met)
+            return false;
+        return true;
+    });
+    const weekEndOf = (w) => dateKey(addDays(keyToDate(w.weekKey), 6));
+    const inBlock = eligible.filter((w) => weekEndOf(w) >= startKey && w.weekKey <= endKey);
+    // A freshly-started block can hold one or two weeks, and a percentage over
+    // that few is mostly noise — one missed week would read as a catastrophic
+    // drop. Top the sample up to PROG_CARDIO_MIN_WEEKS using the most recent
+    // weeks from before the block, and tell the UI how many were borrowed so
+    // it can say so rather than quietly implying they're all this block's.
+    let used = inBlock;
+    let backfilled = 0;
+    if (inBlock.length < PROG_CARDIO_MIN_WEEKS) {
+        const earlier = eligible
+            .filter((w) => weekEndOf(w) < startKey)
+            .slice(-(PROG_CARDIO_MIN_WEEKS - inBlock.length));
+        backfilled = earlier.length;
+        used = earlier.concat(inBlock);
+    }
+    if (!used.length)
         return null;
-    const hit = inRange.filter((w) => w.met).length;
-    return { weeks: inRange.length, hit, pct: Math.round((hit / inRange.length) * 100), currentTarget: inRange[inRange.length - 1].target };
+    const hit = used.filter((w) => w.met).length;
+    return {
+        weeks: used.length,
+        hit,
+        pct: Math.round((hit / used.length) * 100),
+        currentTarget: used[used.length - 1].target,
+        inBlock: inBlock.length,
+        backfilled,
+    };
 }
 function progDayState(entries, programBlocks, programs, d, todayKey) {
     const dk = dateKey(d);
@@ -3544,7 +3587,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                     React.createElement("div", { style: { border: "1px solid #ECE7DE", borderRadius: 10, overflow: "hidden" } }, rows.map((row, ri) => {
                         const wk = cardioWeeks[cardioWeekStartKey(row[0].date)];
                         const cardioMet = !!(wk && wk.met);
-                        return (React.createElement("div", { key: ri, title: cardioMet ? "Cardio target met — " + Math.round(wk.effective) + " of " + wk.target + " min" : "", style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", boxShadow: cardioMet ? "inset 0 0 0 2.5px #D7263D" : "none", position: "relative", zIndex: cardioMet ? 1 : 0 } }, row.map((cell, ci) => {
+                        return (React.createElement("div", { key: ri, title: cardioMet ? "Cardio target met — " + Math.round(wk.effective) + " of " + wk.target + " min" : "", style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", position: "relative", zIndex: cardioMet ? 1 : 0 } }, cardioMet && React.createElement("div", { key: "cardio-wk", style: { position: "absolute", inset: 0, border: "2.5px solid #D7263D", borderRadius: 2, pointerEvents: "none", zIndex: 3 } }), row.map((cell, ci) => {
                             const st = states[ri * 7 + ci];
                             const band = st.kind === "rated" ? progBandFor(st.rate.pct) : null;
                             const isToday = sameDate(cell.date, todayD);
@@ -3581,7 +3624,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                             React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#F0EDE8" } }),
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted } }, "Rest day or upcoming")),
                         moduleOn(enabledModules, "cardio") && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
-                            React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#fff", boxShadow: "inset 0 0 0 2.5px #D7263D" } }),
+                            React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#fff", border: "2.5px solid #D7263D", boxSizing: "border-box" } }),
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "Cardio target met (whole week)"))))))) : (() => {
                 const sortedBlocks = progSortedBlocks(programBlocks);
                 const curIdx = progCurrentBlockIndex(sortedBlocks, todayKey);
@@ -3620,7 +3663,11 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                                         cs.weeks,
                                         " weeks hit target")),
                                 React.createElement("div", { style: { height: 8, borderRadius: 4, background: "#F6E4E4", overflow: "hidden" } },
-                                    React.createElement("div", { style: { height: "100%", width: Math.max(3, cs.pct) + "%", background: "#D7263D", borderRadius: 4 } })))));
+                                    React.createElement("div", { style: { height: "100%", width: Math.max(3, cs.pct) + "%", background: "#D7263D", borderRadius: 4 } })),
+                                cs.backfilled > 0 && React.createElement("div", { style: { fontSize: 10.5, fontWeight: 600, color: "#A87070", marginTop: 8, lineHeight: 1.35 } },
+                                    cs.inBlock === 0
+                                        ? ("No full weeks in this block yet \u2014 showing the last " + cs.backfilled + " week" + (cs.backfilled === 1 ? "" : "s") + " instead.")
+                                        : (cs.inBlock + " week" + (cs.inBlock === 1 ? "" : "s") + " in this block, topped up with " + cs.backfilled + " earlier week" + (cs.backfilled === 1 ? "" : "s") + " for a fair sample.")))));
                     })(),
                     list.length > 0 && (React.createElement("div", { style: { padding: "0 16px", marginBottom: 8 } },
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: C.muted } }, "LIFTS \u00B7 BY SESSION"))),
