@@ -833,6 +833,39 @@ function progDayRateResolved(entries, programBlocks, programs, d) {
 //   open  — a workout was scheduled and the day has passed, but nothing
 //           qualified (nothing logged, or only first-time exercises)
 //   off   — future, rest day, or no program scheduled: doesn't apply
+// Maps weekStartKey -> { target, effective, met } for the cardio weekly
+// target. Calendar rows run Sunday-Saturday, which is exactly how cardio
+// weeks are defined, so each row of the month grid IS one cardio week.
+function progCardioWeekMap(cardioSessions) {
+    const out = {};
+    if (!FEATURE_CARDIO)
+        return out;
+    cardioWeekProgression(cardioSessions).forEach((w) => { out[w.weekKey] = w; });
+    return out;
+}
+// Cardio weeks falling inside a block, and how many hit target. A week is
+// counted by its Sunday start, so a block beginning mid-week doesn't claim a
+// week that was mostly run under the previous block.
+function progCardioBlockStats(cardioSessions, startKey, endKey) {
+    if (!FEATURE_CARDIO || !startKey || !endKey)
+        return null;
+    // cardioWeekProgression() deliberately emits an unbroken run of weeks from
+    // the first-ever session through today, including weeks with no activity,
+    // because the escalating target has to advance week by week. For this
+    // card we only want weeks the block actually contains AND in which cardio
+    // was logged — otherwise a block would be scored against dormant weeks it
+    // had nothing to do with.
+    const weekHasActivity = {};
+    (cardioSessions || []).forEach((s) => {
+        if (s && s.durationSec >= CARDIO_FLOOR_SEC)
+            weekHasActivity[cardioWeekStartKey(keyToDate(s.date))] = true;
+    });
+    const inRange = cardioWeekProgression(cardioSessions).filter((w) => w.weekKey >= startKey && w.weekKey <= endKey && weekHasActivity[w.weekKey]);
+    if (!inRange.length)
+        return null;
+    const hit = inRange.filter((w) => w.met).length;
+    return { weeks: inRange.length, hit, pct: Math.round((hit / inRange.length) * 100), currentTarget: inRange[inRange.length - 1].target };
+}
 function progDayState(entries, programBlocks, programs, d, todayKey) {
     const dk = dateKey(d);
     if (dk > todayKey)
@@ -1280,70 +1313,6 @@ function cardioWeekProgression(sessions) {
     }
     return weeks;
 }
-// Hidden until unlocked — never rendered anywhere until its index is below
-// cardioRevealedCount. Unlocked sequentially, one per week the target is
-// met, stopping (not looping) once all 50 are revealed.
-const CARDIO_REWARD_PROMPTS = [
-    "Photorealistic portrait of a strikingly beautiful woman in her late 20s, dressed as a desert wanderer in flowing sun-bleached linen, mid-stride against a rippling dune at golden hour, wind catching the fabric, confident gaze directly at camera, shot on 85mm lens, shallow depth of field, warm rim lighting.",
-    "Photorealistic portrait of an elegant woman in her 30s in a tailored black trench coat, standing in a rain-slicked alley at night, neon light reflecting off wet pavement, hand raised to push hair back, moody cinematic lighting, sharp focus on her expression.",
-    "Photorealistic portrait of a graceful ballet dancer, mid-arabesque, dramatic single-source studio lighting against a pure black backdrop, muscles and posture emphasizing control and strength, fine art photography style.",
-    "Photorealistic portrait of a fierce, regal woman styled as a warrior queen, ornate armor with intricate detailing, windswept hair, stormy sky barely visible behind her, low-angle heroic composition, dramatic chiaroscuro lighting.",
-    "Photorealistic portrait of a vintage Hollywood glamour icon, 1950s styling, soft studio key light with classic Rembrandt shadow, sequined gown, a knowing half-smile, shot as if on film with subtle grain.",
-    "Photorealistic portrait of a striking equestrian in tailored riding attire, standing beside a horse in a misty paddock at dawn, confident posture, soft diffused morning light, medium telephoto lens compression.",
-    "Photorealistic portrait of a beautiful mountaineer at a windswept summit, technical gear dusted with frost, triumphant stance against a pale alpine sky, crisp high-altitude light, wide dynamic range.",
-    "Photorealistic portrait of a jazz singer mid-performance on a small stage, dramatic red-and-amber stage lighting, microphone in hand, eyes closed in the moment, motion-blurred background, sharp subject focus.",
-    "Photorealistic portrait of a beautiful woman styled as a space explorer, helmet held under one arm, dramatic key light suggesting a distant sun, reflective visor catching a glint, clean sci-fi realism.",
-    "Photorealistic portrait of a beekeeper in a golden wheat field at sunset, veil pushed back to reveal her face, soft backlight rimming her hair, calm and confident expression.",
-    "Photorealistic portrait of a falconer in the highlands, a hawk perched on her gloved arm, windswept hair, overcast dramatic sky, earthy tones, editorial outdoor photography style.",
-    "Photorealistic portrait of an archer at full draw, focused intensity in her eyes, autumn forest backdrop softly blurred, side lighting emphasizing muscle and form.",
-    "Photorealistic portrait of a woman in retro 1960s poolside styling, oversized sunglasses pushed up into her hair, vibrant saturated color, bright midday sun, playful confident expression.",
-    "Photorealistic portrait of a snow queen draped in white furs, standing in a quiet snowfall, pale cool lighting, breath visible in the cold air, serene regal expression.",
-    "Photorealistic portrait of a botanist among dense greenhouse foliage, dappled natural light filtering through leaves, gentle contemplative expression, soft green-toned color palette.",
-    "Photorealistic portrait of a woman in a leather motorcycle jacket, leaning against a vintage bike in golden hour light, confident smirk, warm desert highway backdrop softly blurred.",
-    "Photorealistic portrait of a head chef in a professional kitchen, steam rising in the background, sleeves rolled up, focused expression, warm tungsten kitchen lighting.",
-    "Photorealistic portrait of a violinist mid-performance on a concert stage, eyes closed in concentration, warm spotlight, elegant gown, dark blurred concert hall behind her.",
-    "Photorealistic portrait of a surfer at dawn, wetsuit half-zipped, board under one arm, ocean mist behind her, cool blue-gray morning light, windswept wet hair.",
-    "Photorealistic portrait of a blacksmith at her forge, glowing embers casting warm orange light across her face, focused determined expression, sparks faintly visible.",
-    "Photorealistic portrait of an archivist among towering shelves of old books, soft window light, dust motes visible in the air, thoughtful expression, warm sepia-toned palette.",
-    "Photorealistic portrait of a vintage aviator in leather flight jacket and goggles pushed up on her forehead, standing beside a propeller plane, golden hour rim light.",
-    "Photorealistic portrait of a diver emerging from calm turquoise water, droplets catching the light, confident direct gaze, bright natural sunlight, crisp clarity.",
-    "Photorealistic portrait of a painter in her studio, paint-streaked apron, palette in hand, soft north-facing window light, contemplative expression, canvases blurred behind her.",
-    "Photorealistic portrait of a mountain climber at a rocky summit ridge, rope coiled over one shoulder, triumphant windswept pose, dramatic golden backlighting.",
-    "Photorealistic portrait of a woman on a city rooftop at dusk, skyline lights softly blurred behind her, wind catching her coat, cool blue-violet twilight tones.",
-    "Photorealistic portrait of a vineyard worker at harvest time, basket of grapes in her arms, warm late-afternoon sun, dust particles glowing in the light, earthy natural tones.",
-    "Photorealistic portrait of a lighthouse keeper standing at the railing overlooking a stormy sea, coat whipping in the wind, dramatic moody gray-blue palette.",
-    "Photorealistic portrait of a fencer in a competition stance, foil raised, mesh mask held at her side revealing a focused expression, stark studio lighting, high contrast.",
-    "Photorealistic portrait of a woman on horseback riding through an autumn forest, fallen leaves swirling, warm amber light filtering through the canopy.",
-    "Photorealistic portrait of a woman by a crackling fireplace in a snowbound cabin, warm firelight on her face, cozy knit sweater, soft shallow depth of field.",
-    "Photorealistic portrait of a marathon runner crossing a finish line at sunrise, arms raised, genuine exuberant expression, warm backlight, motion-frozen clarity.",
-    "Photorealistic portrait of a sculptor in her studio, marble dust on her hands and forearms, focused expression, dramatic side lighting emphasizing texture and form.",
-    "Photorealistic portrait of an astronomer at a rooftop observatory at night, telescope beside her, starlight and city glow in the background, calm curious expression.",
-    "Photorealistic portrait of a perfumer surrounded by amber glass bottles, soft warm light, delicate focused expression as she examines a vial, rich golden tones.",
-    "Photorealistic portrait of a bookshop owner among towering stacks, warm lamp light, cardigan and glasses, gentle inviting expression, cozy shallow-focus background.",
-    "Photorealistic portrait of a cellist mid-performance, warm stage light catching the instrument's wood grain, deep concentration, elegant dark attire.",
-    "Photorealistic portrait of a flamenco dancer mid-turn, vibrant red dress in motion, dramatic warm stage lighting, powerful confident expression, motion blur in the fabric.",
-    "Photorealistic portrait of an ice skater on an outdoor rink at dusk, string lights glowing softly behind her, cold air visible in her breath, graceful mid-motion pose.",
-    "Photorealistic portrait of a gardener among blooming rose bushes, sunhat in one hand, soft natural light, warm relaxed smile, shallow depth of field on the flowers behind her.",
-    "Photorealistic portrait of a photographer with a vintage film camera raised, one eye through the viewfinder, dramatic side profile lighting, urban backdrop softly blurred.",
-    "Photorealistic portrait of a sailor on the deck of a ship, wind and salt spray in her hair, bright open ocean light, confident weathered expression, rope coiled nearby.",
-    "Photorealistic portrait of a calligrapher at her desk, brush poised over paper, warm focused lamp light, delicate concentration, ink and parchment textures visible.",
-    "Photorealistic portrait of a circus performer on a tightrope, arms outstretched for balance, dramatic spotlight against darkness, tense graceful poise.",
-    "Photorealistic portrait of a woman at a beach bonfire at night, firelight flickering warmly across her face, stars faintly visible above, relaxed contented expression.",
-    "Photorealistic portrait of a vintage race car driver leaning against a classic roadster, leather driving gloves, windswept hair, warm afternoon sun, confident smile.",
-    "Photorealistic portrait in the style of a perfume advertisement, close crop, dramatic single-source lighting, glossy elegant styling, direct captivating gaze.",
-    "Photorealistic portrait lit like a Renaissance oil painting, warm chiaroscuro lighting, rich velvet fabric, timeless composed expression, deep shadow and golden highlight.",
-    "Photorealistic portrait of a woman in yoga pose at sunrise on a quiet beach, soft pastel morning light, serene focused expression, minimal warm color palette.",
-    "Photorealistic portrait of a glassblower at her furnace, molten glass glowing orange, intense focused expression, sparks of warm light reflecting off her face.",
-];
-// Given the full progression, returns how many weeks have newly met
-// target since the last time we checked (cardioUnlockedWeekKeys), so an
-// unlock only ever fires once per week regardless of when this runs.
-function cardioComputeNewUnlocks(sessions, alreadyUnlockedWeekKeys) {
-    const weeks = cardioWeekProgression(sessions);
-    const already = new Set(alreadyUnlockedWeekKeys || []);
-    const newlyMet = weeks.filter((w) => w.met && !already.has(w.weekKey)).map((w) => w.weekKey);
-    return { weeks, newlyMet };
-}
 function cardioFormatDuration(sec) {
     const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
     return `${m}:${pad2(s)}`;
@@ -1394,31 +1363,6 @@ function defaultEnabledModules() {
 }
 // ============================================================
 // MODULE REGISTRY (end)
-// ============================================================
-// ============================================================
-// CARDIO REWARDS OWNER GATE — the unlockable prompt list is personal, so it
-// renders only for accounts whose email local-part starts with this prefix.
-// A prefix rather than the full address keeps the owner's actual email out
-// of a file that anyone can view-source.
-//
-// Two things this deliberately is NOT:
-//   * It isn't access control. The rule is visible in the source, so anyone
-//     could register a matching address. It's here to keep the section out
-//     of other people's UI, not to defend anything.
-//   * It isn't secrecy for the prompts themselves — they ship in this file
-//     and are readable regardless. Move them to a Supabase table with
-//     row-level security if that ever matters.
-// Set to "" to hide the rewards from everyone.
-const CARDIO_REWARDS_OWNER_PREFIX = "scotti";
-function cardioRewardsVisible(user) {
-    if (!CARDIO_REWARDS_OWNER_PREFIX)
-        return false;
-    const email = String((user && user.email) || "").toLowerCase().trim();
-    if (!email)
-        return false;
-    const localPart = email.split("@")[0];
-    return localPart.indexOf(CARDIO_REWARDS_OWNER_PREFIX.toLowerCase()) === 0;
-}
 // ============================================================
 function ProgressBarRow({ current, target, unit, color }) {
     const safeTarget = target > 0 ? target : 1;
@@ -2395,18 +2339,6 @@ function App() {
         setCardioSessions((cur) => cur.filter((s) => s.id !== id));
         setCardioDeletedSessionIds((cur) => cur.includes(id) ? cur : [...cur, id]);
     };
-    // Detect newly-earned unlocks whenever sessions change, reveal one
-    // prompt per newly-met week (in order, stopping at the end of the list).
-    useEffect(() => {
-        if (!FEATURE_CARDIO || !cardioSessions.length)
-            return;
-        const { newlyMet } = cardioComputeNewUnlocks(cardioSessions, cardioUnlockedWeekKeys);
-        if (newlyMet.length) {
-            cardioDirtyRef.current = true;
-            setCardioUnlockedWeekKeys((cur) => Array.from(new Set([...cur, ...newlyMet])));
-            setCardioRevealedCount((cur) => Math.min(CARDIO_TOTAL_PROMPTS, cur + newlyMet.length));
-        }
-    }, [cardioSessions]);
     // ---- CARDIO handlers + effects (end) ----
     // ---- My Programs ----
     // NOTE: there is deliberately no manual "select program" action anymore.
@@ -3563,6 +3495,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
         const todayKey = dateKey(todayD);
         const states = cells.map((c) => (c.inMonth ? progDayState(entries, programBlocks, programs, c.date, todayKey) : { kind: "off" }));
         const summary = progMonthSummary(states);
+        const cardioWeeks = moduleOn(enabledModules, "cardio") ? progCardioWeekMap(cardioSessions) : {};
         const tabs = [{ id: "month", label: "Monthly" }, { id: "exercise", label: "By Exercise" }];
         return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 33, background: "#fff", display: "flex", flexDirection: "column" } },
             React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 0", borderBottom: "1px solid #ECE7DE", flexShrink: 0 } },
@@ -3608,29 +3541,33 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                         React.createElement("div", { style: { fontSize: 10, color: C.muted, marginTop: 2 } }, "every exercise"))),
                 React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", padding: "0 16px", marginBottom: 6 } }, WEEKDAY_LETTERS.map((d, i) => React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, d))),
                 React.createElement("div", { style: { padding: "0 16px" } },
-                    React.createElement("div", { style: { border: "1px solid #ECE7DE", borderRadius: 10, overflow: "hidden" } }, rows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)" } }, row.map((cell, ci) => {
-                        const st = states[ri * 7 + ci];
-                        const band = st.kind === "rated" ? progBandFor(st.rate.pct) : null;
-                        const isToday = sameDate(cell.date, todayD);
-                        let bg, ink, weight;
-                        if (st.kind === "rated") {
-                            bg = band.fill;
-                            ink = band.ink;
-                            weight = 800;
-                        }
-                        else if (st.kind === "open") {
-                            bg = "#FFFFFF";
-                            ink = "#9A9184";
-                            weight = 600;
-                        }
-                        else {
-                            bg = "#F0EDE8";
-                            ink = "#CFC8BC";
-                            weight = 500;
-                        }
-                        return (React.createElement("div", { key: ci, title: st.kind === "rated" ? st.rate.pct + "% — " + st.rate.progressed + " of " + st.rate.total + " progressed" : "", style: { aspectRatio: "1 / 1", background: bg, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: isToday && cell.inMonth ? "inset 0 0 0 2.5px " + TODAY_BLUE : "none" } },
-                            React.createElement("div", { style: { fontSize: 13.5, fontWeight: weight, color: ink, lineHeight: 1 } }, cell.date.getDate())));
-                    })))))),
+                    React.createElement("div", { style: { border: "1px solid #ECE7DE", borderRadius: 10, overflow: "hidden" } }, rows.map((row, ri) => {
+                        const wk = cardioWeeks[cardioWeekStartKey(row[0].date)];
+                        const cardioMet = !!(wk && wk.met);
+                        return (React.createElement("div", { key: ri, title: cardioMet ? "Cardio target met — " + Math.round(wk.effective) + " of " + wk.target + " min" : "", style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", boxShadow: cardioMet ? "inset 0 0 0 2.5px #D7263D" : "none", position: "relative", zIndex: cardioMet ? 1 : 0 } }, row.map((cell, ci) => {
+                            const st = states[ri * 7 + ci];
+                            const band = st.kind === "rated" ? progBandFor(st.rate.pct) : null;
+                            const isToday = sameDate(cell.date, todayD);
+                            let bg, ink, weight;
+                            if (st.kind === "rated") {
+                                bg = band.fill;
+                                ink = band.ink;
+                                weight = 800;
+                            }
+                            else if (st.kind === "open") {
+                                bg = "#FFFFFF";
+                                ink = "#9A9184";
+                                weight = 600;
+                            }
+                            else {
+                                bg = "#F0EDE8";
+                                ink = "#CFC8BC";
+                                weight = 500;
+                            }
+                            return (React.createElement("div", { key: ci, title: st.kind === "rated" ? st.rate.pct + "% — " + st.rate.progressed + " of " + st.rate.total + " progressed" : "", style: { aspectRatio: "1 / 1", background: bg, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: isToday && cell.inMonth ? "inset 0 0 0 2.5px " + TODAY_BLUE : "none" } },
+                                React.createElement("div", { style: { fontSize: 13.5, fontWeight: weight, color: ink, lineHeight: 1 } }, cell.date.getDate())));
+                        })));
+                    }))),
                 React.createElement("div", { style: { padding: "18px 16px 0" } },
                     React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 9 } }, "EXERCISES THAT PROGRESSED"),
                     React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 12 } }, PROG_BANDS.map((b) => (React.createElement("div", { key: b.label, style: { display: "flex", alignItems: "center", gap: 6 } },
@@ -3642,7 +3579,10 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "No reading")),
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                             React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#F0EDE8" } }),
-                            React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted } }, "Rest day or upcoming")))))) : (() => {
+                            React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted } }, "Rest day or upcoming")),
+                        moduleOn(enabledModules, "cardio") && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                            React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#fff", boxShadow: "inset 0 0 0 2.5px #D7263D" } }),
+                            React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "Cardio target met (whole week)"))))))) : (() => {
                 const sortedBlocks = progSortedBlocks(programBlocks);
                 const curIdx = progCurrentBlockIndex(sortedBlocks, todayKey);
                 const idx = progBlockIdx === null ? curIdx : Math.max(0, Math.min(sortedBlocks.length - 1, progBlockIdx));
@@ -3663,6 +3603,27 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                         React.createElement("div", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted, lineHeight: 1.4 } },
                             "Share of sessions in this block where each exercise progressed",
                             idx === curIdx ? " · current block" : "")),
+                    (() => {
+                        const cs = moduleOn(enabledModules, "cardio") && range ? progCardioBlockStats(cardioSessions, range.startKey, range.endKey) : null;
+                        if (!cs)
+                            return null;
+                        return (React.createElement("div", { style: { padding: "0 16px", marginBottom: 18 } },
+                            React.createElement("div", { style: { padding: "14px 16px", borderRadius: 13, background: "#FDF3F3", border: "1.5px solid #D7263D" } },
+                                React.createElement("div", { style: { fontSize: 9, fontWeight: 800, letterSpacing: ".11em", color: "#D7263D", marginBottom: 6 } }, "CARDIO \u00B7 BY WEEK"),
+                                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 } },
+                                    React.createElement("div", { style: { fontSize: 24, fontWeight: 800, color: "#D7263D", lineHeight: 1 } },
+                                        cs.pct,
+                                        "%"),
+                                    React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: "#8A5050" } },
+                                        cs.hit,
+                                        " of ",
+                                        cs.weeks,
+                                        " weeks hit target")),
+                                React.createElement("div", { style: { height: 8, borderRadius: 4, background: "#F6E4E4", overflow: "hidden" } },
+                                    React.createElement("div", { style: { height: "100%", width: Math.max(3, cs.pct) + "%", background: "#D7263D", borderRadius: 4 } })))));
+                    })(),
+                    list.length > 0 && (React.createElement("div", { style: { padding: "0 16px", marginBottom: 8 } },
+                        React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: C.muted } }, "LIFTS \u00B7 BY SESSION"))),
                     list.length === 0 ? (React.createElement("div", { style: { margin: "0 16px", padding: "26px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
                         React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "Nothing to compare yet"),
                         React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4 } }, "An exercise appears once it's been logged in at least two sessions within this block."))) : (React.createElement("div", { style: { padding: "0 16px" } },
@@ -3697,13 +3658,6 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                 const rawThisWeek = (totals[thisWeekKey] && totals[thisWeekKey].raw) || 0;
                 const nextTarget = Math.min(CARDIO_TARGET_CAP, thisWeek.target + CARDIO_WEEKLY_INCREMENT);
                 const thisWeekSessions = cardioSessions.filter((s) => cardioWeekStartKey(keyToDate(s.date)) === thisWeekKey).sort((a, b) => a.startTime.localeCompare(b.startTime));
-                const copyPrompt = (text) => {
-                    try {
-                        if (navigator.clipboard && navigator.clipboard.writeText)
-                            navigator.clipboard.writeText(text);
-                    }
-                    catch (e) { }
-                };
                 return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 33, background: "#fff", display: "flex", flexDirection: "column" } },
                     React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
                         React.createElement("button", { onClick: () => setCardioView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
@@ -3753,23 +3707,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                                         React.createElement("div", { style: { color: C.ink, fontWeight: 600, flexShrink: 0 } }, cardioFormatDuration(s.durationSec)),
                                         React.createElement("div", { style: { color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, s.durationSec >= CARDIO_FLOOR_SEC ? `${bcFormatWeight(cardioEffectiveMinutes(s.durationSec))} eff. min` : "below 5:00 — no credit")),
                                     React.createElement("button", { onClick: () => cardioRemoveSession(s.id), title: "Delete session", style: { border: "none", background: "transparent", color: "#C0392B", fontSize: 15, cursor: "pointer", padding: "4px 0 4px 10px", flexShrink: 0, lineHeight: 1 } }, "\u2715")));
-                            }))),
-                        cardioRewardsVisible(user) && cardioRevealedCount > 0 && (React.createElement("div", null,
-                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: C.muted, marginBottom: 8 } },
-                                "UNLOCKED (",
-                                cardioRevealedCount,
-                                " OF ",
-                                CARDIO_TOTAL_PROMPTS,
-                                ")"),
-                            CARDIO_REWARD_PROMPTS.slice(0, cardioRevealedCount).slice().reverse().map((p, idx) => {
-                                const realIndex = cardioRevealedCount - idx;
-                                return (React.createElement("div", { key: realIndex, style: { border: "1px solid #E7E1D7", borderRadius: 12, padding: 12, marginBottom: 8 } },
-                                    React.createElement("div", { style: { fontSize: 10, fontWeight: 700, color: C.muted, marginBottom: 6 } },
-                                        "#",
-                                        realIndex),
-                                    React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.4, color: C.ink, marginBottom: 8 } }, p),
-                                    React.createElement("button", { onClick: () => copyPrompt(p), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 8, padding: "6px 12px", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "Copy")));
-                            }))))));
+                            }))))))
             })())));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
