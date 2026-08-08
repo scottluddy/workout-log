@@ -737,6 +737,53 @@ function ptHeadline(plan) {
 // PERSONAL TRAINER MODULE (end)
 // ============================================================
 // ============================================================
+// MOBILITY MODULE (start) — safe to delete entirely: remove this block, the
+// "MOBILITY" state/handlers in App(), its dashboard button and screen, the
+// mobility card in the Progress Tracker, drop the registry entry, then flip
+// FEATURE_MOBILITY to false.
+//
+// Deliberately NOT built on the Cardio machinery. Cardio escalates a weekly
+// volume target because more minutes is the goal; mobility is the opposite —
+// what matters is touching it often, not doing more of it in one sitting. So
+// this logs a simple set of modalities per day with no timer and no duration,
+// and is measured by how many of the last 30 days had anything logged.
+const FEATURE_MOBILITY = true;
+const MOBILITY_BLUE = "#2B5FCC";
+const MOBILITY_BLUE_SOFT = "#EAF0FC";
+const MOBILITY_WINDOW_DAYS = 30; // fixed denominator, on purpose — see below
+// The modality list is user data, not a fixed list — it starts empty and is
+// built up with the + button. Each entry is { id, label }; the id is what gets
+// written into mobilityLog, so renaming a label is safe while removing an
+// entry leaves previously logged days intact (they simply stop showing that
+// pill). Such a day still counts toward the 30-day figure, which is right —
+// you did do the work, even if the drill has since left the list.
+function mobilityDayList(mobilityLog, dk) {
+    const v = (mobilityLog || {})[dk];
+    return Array.isArray(v) ? v : [];
+}
+function mobilityHasAny(mobilityLog, dk) {
+    return mobilityDayList(mobilityLog, dk).length > 0;
+}
+// Share of the last 30 calendar days with anything logged. The denominator is
+// always 30 — never "days since you started" — so the figure begins at 0% and
+// climbs as the habit builds, rather than opening at a flattering 100% off a
+// single day. Today counts only once something is actually logged, which
+// falls out naturally from counting non-empty days.
+function progMobilityStats(mobilityLog, todayKey) {
+    if (!FEATURE_MOBILITY)
+        return null;
+    const end = keyToDate(todayKey);
+    let days = 0;
+    for (let i = 0; i < MOBILITY_WINDOW_DAYS; i++) {
+        if (mobilityHasAny(mobilityLog, dateKey(addDays(end, -i))))
+            days++;
+    }
+    return { days, window: MOBILITY_WINDOW_DAYS, pct: Math.round((days / MOBILITY_WINDOW_DAYS) * 100) };
+}
+// ============================================================
+// MOBILITY MODULE (end)
+// ============================================================
+// ============================================================
 // PROGRESS TRACKER MODULE (start) — safe to delete entirely: remove this
 // block, the "PROGRESS TRACKER" state in App(), its dashboard button and
 // its screen, drop the registry entry, then flip PROGRESS_TRACKER_ENABLED
@@ -1382,8 +1429,9 @@ function cardioFormatDuration(sec) {
 // the settings screen and the gating both pick it up automatically.
 const MODULES = [
     { id: "cardio", label: "Cardio", blurb: "Stopwatch, weekly effective-minute targets, and calendar marks.", available: () => FEATURE_CARDIO },
-    { id: "bodycomp", label: "Body Composition", blurb: "Weekly weigh-ins with bulk / cut / maintenance blocks.", available: () => BODY_COMP_ENABLED },
+    { id: "bodycomp", label: "Body Comp", blurb: "Weekly weigh-ins with bulk / cut / maintenance blocks.", available: () => BODY_COMP_ENABLED },
     { id: "trainer", label: "Personal Trainer", blurb: "Per-set rep targets and cues inside each workout.", available: () => PERSONAL_TRAINER_ENABLED },
+    { id: "mobility", label: "Mobility", blurb: "Log daily mobility work and track how often you touch it.", available: () => FEATURE_MOBILITY },
     { id: "progress", label: "Progress Tracker", blurb: "Calendar heat map of how many exercises progressed each session.", available: () => PROGRESS_TRACKER_ENABLED },
     { id: "analysis", label: "Analyze with AI", blurb: "Export recent training history for outside analysis.", available: () => ANALYSIS_EXPORT_ENABLED },
 ];
@@ -1439,6 +1487,13 @@ function App() {
     const [swTick, setSwTick] = useState(0); // dummy value bumped to force a re-render while running
     // ---- STOPWATCH state (end) ----
     // ---- PERSONAL TRAINER state (start) ----
+    const [mobilityLog, setMobilityLog] = useState({}); // dateKey -> [modalityId]
+    const [mobilityModalities, setMobilityModalities] = useState([]); // user-built list of { id, label }
+    const [mobilityEditing, setMobilityEditing] = useState(false);
+    const [mobilityView, setMobilityView] = useState(null); // null | "day" | "calendar"
+    const [mobilityDate, setMobilityDate] = useState(null); // dateKey being edited
+    const [mobilityMonth, setMobilityMonth] = useState(null); // Date | null
+    const mobilityDirtyRef = useRef(false);
     const [progView, setProgView] = useState(null); // null | "main"
     const [progMonth, setProgMonth] = useState(null); // Date | null
     const [progTab, setProgTab] = useState("month"); // "month" | "exercise"
@@ -1534,7 +1589,7 @@ function App() {
     const dirtyRef = useRef(new Set());
     const programsDirtyRef = useRef(false);
     const stateRef = useRef({ entries, programs, currentProgramId });
-    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, enabledModules };
+    stateRef.current = { entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, enabledModules, mobilityLog, mobilityModalities };
     const migratedRef = useRef(false);
     // ---- BODY COMPOSITION refs (start) ----
     const bcStateRef = useRef({ entries: {}, blocks: [] });
@@ -1580,6 +1635,10 @@ function App() {
                     setDeletedProgramBlockIds(d.deletedProgramBlockIds);
                 if (Array.isArray(d.enabledModules))
                     setEnabledModules(d.enabledModules);
+                if (d.mobilityLog && typeof d.mobilityLog === "object")
+                    setMobilityLog(d.mobilityLog);
+                if (Array.isArray(d.mobilityModalities))
+                    setMobilityModalities(d.mobilityModalities);
             }
         }
         catch (e) { }
@@ -1803,6 +1862,7 @@ function App() {
         const wasCardioDirty = cardioDirtyRef.current;
         const wasProgramBlocksDirty = programBlocksDirtyRef.current;
         const wasModulesDirty = enabledModulesDirtyRef.current;
+        const wasMobilityDirty = mobilityDirtyRef.current;
         try {
             const { error } = await supa.from("workout_logs").upsert({ user_id: uid, data: stateRef.current, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
             if (error) {
@@ -1821,6 +1881,8 @@ function App() {
                     programBlocksDirtyRef.current = false;
                 if (wasModulesDirty)
                     enabledModulesDirtyRef.current = false;
+                if (wasMobilityDirty)
+                    mobilityDirtyRef.current = false;
                 setSyncStatus("Synced ✓");
                 setSyncOk(true);
             }
@@ -1921,6 +1983,16 @@ function App() {
                         setCardioRevealedCount((cur) => Math.max(cur, remote.cardioRevealedCount));
                     }
                 }
+                // Mobility: merged per day rather than whole-object, so a day
+                // logged on the phone and a different day logged on the laptop
+                // both survive. A day present on both sides takes the remote
+                // copy unless this device has an unpushed edit.
+                if (!mobilityDirtyRef.current && remote.mobilityLog && typeof remote.mobilityLog === "object") {
+                    setMobilityLog((cur) => Object.assign({}, cur, remote.mobilityLog));
+                }
+                if (!mobilityDirtyRef.current && Array.isArray(remote.mobilityModalities)) {
+                    setMobilityModalities(remote.mobilityModalities);
+                }
                 // Module preferences: last-write-wins, dirty-flag gated, same
                 // as the other whole-value settings.
                 if (!enabledModulesDirtyRef.current && Array.isArray(remote.enabledModules)) {
@@ -2020,7 +2092,7 @@ function App() {
         }
         persistLocal();
         schedulePush();
-    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, enabledModules, persistLocal, schedulePush]);
+    }, [entries, programs, currentProgramId, deletedProgramIds, aiTargets, cardioSessions, cardioDeletedSessionIds, cardioUnlockedWeekKeys, cardioRevealedCount, programBlocks, deletedProgramBlockIds, enabledModules, mobilityLog, mobilityModalities, persistLocal, schedulePush]);
     const C = colors(ACCENT);
     const activeProgram = getActiveProgram(currentProgramId, programs);
     const headerProgramName = (() => {
@@ -2383,6 +2455,42 @@ function App() {
         setCardioDeletedSessionIds((cur) => cur.includes(id) ? cur : [...cur, id]);
     };
     // ---- CARDIO handlers + effects (end) ----
+    // ---- MOBILITY handlers ----
+    const mobilityAddModality = () => {
+        const name = window.prompt("Name of the drill (e.g. Hip Openers)");
+        if (!name || !name.trim())
+            return;
+        const label = name.trim();
+        if (mobilityModalities.some((m) => m.label.toLowerCase() === label.toLowerCase()))
+            return; // already on the list
+        const id = "mb_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        mobilityDirtyRef.current = true;
+        setMobilityModalities((cur) => [...cur, { id, label }]);
+    };
+    const mobilityRemoveModality = (m) => {
+        const ok = window.confirm(`Remove "${m.label}" from the list? Days you already logged it on stay logged.`);
+        if (!ok)
+            return;
+        mobilityDirtyRef.current = true;
+        setMobilityModalities((cur) => cur.filter((x) => x.id !== m.id));
+    };
+    const mobilityToggle = (dk, modalityId) => {
+        mobilityDirtyRef.current = true;
+        setMobilityLog((cur) => {
+            const next = Object.assign({}, cur);
+            const list = Array.isArray(next[dk]) ? next[dk].slice() : [];
+            const i = list.indexOf(modalityId);
+            if (i >= 0)
+                list.splice(i, 1);
+            else
+                list.push(modalityId);
+            if (list.length)
+                next[dk] = list;
+            else
+                delete next[dk]; // an empty day is an absent day, so the calendar clears
+            return next;
+        });
+    };
     // ---- My Programs ----
     // NOTE: there is deliberately no manual "select program" action anymore.
     // Which program governs a given date is decided entirely by Program
@@ -3153,10 +3261,12 @@ React.createElement("div", null,
                     React.createElement("div", { style: { display: "flex", gap: 8 } },
                         React.createElement("button", { onClick: () => { setGapNotice(null); setPbError(""); setPbView("manage"); }, style: { flex: 1, padding: 10, border: "none", borderRadius: 10, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Open Program Schedule"),
                         React.createElement("button", { onClick: () => setGapNotice(null), style: { padding: "10px 14px", border: "1px solid #E7E1D7", borderRadius: 10, background: "#fff", color: "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "Dismiss")))),
-                moduleOn(enabledModules, "cardio") && (React.createElement("button", { onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { marginTop: 16, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D7263D", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Cardio")),
-                moduleOn(enabledModules, "progress") && (React.createElement("button", { onClick: () => { setProgMonth(startOfMonth(new Date())); setProgView("main"); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#1F7A4D", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Progress Tracker")),
-                moduleOn(enabledModules, "bodycomp") && (React.createElement("button", { onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: "#D9A81C", color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Body Composition")),
-                moduleOn(enabledModules, "analysis") && (React.createElement("button", { onClick: () => { setAxCopyStatus(""); const todays = PROGRAM_BLOCKS_ENABLED ? resolveProgramIdForDate(programBlocks, dateKey(new Date())) : currentProgramId; setAxProgramId(todays !== null && todays !== undefined ? todays : currentProgramId); setAxOpen(true); setMenuOpen(false); }, style: { marginTop: 12, width: "100%", padding: 15, border: "none", borderRadius: 14, background: C.a, color: "#fff", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" } }, "Analyze with AI")))),
+                React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 16 } },
+                    moduleOn(enabledModules, "cardio") && React.createElement("button", { key: "m-cardio", onClick: () => { setCardioView("main"); setMenuOpen(false); }, style: { flex: "1 1 calc(50% - 5px)", background: "#D7263D", padding: 15, border: "none", borderRadius: 14, color: "#fff", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer", minHeight: 62 } }, "Cardio"),
+                    moduleOn(enabledModules, "mobility") && React.createElement("button", { key: "m-mob", onClick: () => { const t = dateKey(new Date()); setMobilityDate(t); setMobilityMonth(startOfMonth(new Date())); setMobilityView("day"); setMenuOpen(false); }, style: { flex: "1 1 calc(50% - 5px)", background: MOBILITY_BLUE, padding: 15, border: "none", borderRadius: 14, color: "#fff", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer", minHeight: 62 } }, "Mobility"),
+                    moduleOn(enabledModules, "bodycomp") && React.createElement("button", { key: "m-bc", onClick: () => { setBcView("table"); setMenuOpen(false); }, style: { flex: "1 1 calc(50% - 5px)", background: "#D9A81C", padding: 15, border: "none", borderRadius: 14, color: "#fff", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer", minHeight: 62 } }, "Body Comp"),
+                    moduleOn(enabledModules, "progress") && React.createElement("button", { key: "m-prog", onClick: () => { setProgMonth(startOfMonth(new Date())); setProgView("main"); setMenuOpen(false); }, style: { flex: "1 1 calc(50% - 5px)", background: "#1F7A4D", padding: 15, border: "none", borderRadius: 14, color: "#fff", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer", minHeight: 62 } }, "Progress Tracker"),
+                    moduleOn(enabledModules, "analysis") && React.createElement("button", { key: "m-ax", onClick: () => { setAxCopyStatus(""); const todays = PROGRAM_BLOCKS_ENABLED ? resolveProgramIdForDate(programBlocks, dateKey(new Date())) : currentProgramId; setAxProgramId(todays !== null && todays !== undefined ? todays : currentProgramId); setAxOpen(true); setMenuOpen(false); }, style: { flex: "1 1 calc(50% - 5px)", background: C.a, padding: 15, border: "none", borderRadius: 14, color: "#fff", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer", minHeight: 62 } }, "Analyze with AI")))),
             menuOpen && !accountSubView && (React.createElement("div", { onClick: () => setMenuOpen(false), style: { position: "absolute", inset: 0, zIndex: 20, background: "rgba(38,34,29,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 } },
                 React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 480, background: "#FFFFFF", borderRadius: "22px 22px 0 0", padding: "22px 20px calc(env(safe-area-inset-bottom, 0px) + 24px)", boxShadow: "0 -12px 40px rgba(0,0,0,0.25)", maxHeight: "92%", overflow: "auto" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 } },
@@ -3327,7 +3437,7 @@ React.createElement("div", null, menuOpen && accountSubView === "modules" && (Re
                 return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 30, background: "#fff", display: "flex", flexDirection: "column" } },
                     React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
                         React.createElement("button", { onClick: () => setBcView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
-                        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Body Composition"),
+                        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Body Comp"),
                         React.createElement("button", { onClick: () => setBcView("blocks"), style: { border: "none", background: C.a, borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#fff", cursor: "pointer" } }, "Blocks")),
                     React.createElement("div", { ref: bcTableScrollRef, className: "wl-scroll", style: { flex: 1, overflow: "auto" } },
                         React.createElement("div", { style: { display: "flex", position: "sticky", top: 0, zIndex: 2, background: "#F3EFE9", borderBottom: "1px solid #ECE7DE", padding: "10px 6px" } },
@@ -3587,7 +3697,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                     React.createElement("div", { style: { border: "1px solid #ECE7DE", borderRadius: 10, overflow: "hidden" } }, rows.map((row, ri) => {
                         const wk = cardioWeeks[cardioWeekStartKey(row[0].date)];
                         const cardioMet = !!(wk && wk.met);
-                        return (React.createElement("div", { key: ri, title: cardioMet ? "Cardio target met — " + Math.round(wk.effective) + " of " + wk.target + " min" : "", style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", position: "relative", zIndex: cardioMet ? 1 : 0 } }, cardioMet && React.createElement("div", { key: "cardio-wk", style: { position: "absolute", inset: 0, border: "2.5px solid #D7263D", borderRadius: 2, pointerEvents: "none", zIndex: 3 } }), row.map((cell, ci) => {
+                        return (React.createElement("div", { key: ri, title: cardioMet ? "Cardio target met — " + Math.round(wk.effective) + " of " + wk.target + " min" : "", style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", position: "relative", zIndex: cardioMet ? 1 : 0 } }, cardioMet && React.createElement("div", { key: "cardio-wk", style: { position: "absolute", top: 4, bottom: 4, left: 4, right: 4, border: "2.5px solid #D7263D", borderRadius: 999, pointerEvents: "none", zIndex: 3 } }), row.map((cell, ci) => {
                             const st = states[ri * 7 + ci];
                             const band = st.kind === "rated" ? progBandFor(st.rate.pct) : null;
                             const isToday = sameDate(cell.date, todayD);
@@ -3624,7 +3734,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                             React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#F0EDE8" } }),
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.muted } }, "Rest day or upcoming")),
                         moduleOn(enabledModules, "cardio") && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
-                            React.createElement("div", { style: { width: 14, height: 14, borderRadius: 3, background: "#fff", border: "2.5px solid #D7263D", boxSizing: "border-box" } }),
+                            React.createElement("div", { style: { width: 18, height: 12, borderRadius: 999, background: "#fff", border: "2px solid #D7263D", boxSizing: "border-box" } }),
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "Cardio target met (whole week)"))))))) : (() => {
                 const sortedBlocks = progSortedBlocks(programBlocks);
                 const curIdx = progCurrentBlockIndex(sortedBlocks, todayKey);
@@ -3669,7 +3779,23 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                                         ? ("No full weeks in this block yet \u2014 showing the last " + cs.backfilled + " week" + (cs.backfilled === 1 ? "" : "s") + " instead.")
                                         : (cs.inBlock + " week" + (cs.inBlock === 1 ? "" : "s") + " in this block, topped up with " + cs.backfilled + " earlier week" + (cs.backfilled === 1 ? "" : "s") + " for a fair sample.")))));
                     })(),
-                    list.length > 0 && (React.createElement("div", { style: { padding: "0 16px", marginBottom: 8 } },
+                    list.length > 0 && ((() => {
+                        // Mobility is a fixed 30-day rolling window, not block-scoped:
+                        // the habit doesn't reset when a lifting program changes, and a
+                        // fixed denominator makes the number climb from 0% as it builds.
+                        const ms = moduleOn(enabledModules, "mobility") ? progMobilityStats(mobilityLog, dateKey(new Date())) : null;
+                        if (!ms)
+                            return null;
+                        return (React.createElement("div", { style: { padding: "0 16px", marginBottom: 18 } },
+                            React.createElement("div", { style: { padding: "14px 16px", borderRadius: 13, background: MOBILITY_BLUE_SOFT, border: "1.5px solid " + MOBILITY_BLUE } },
+                                React.createElement("div", { style: { fontSize: 9, fontWeight: 800, letterSpacing: ".11em", color: MOBILITY_BLUE, marginBottom: 6 } }, "MOBILITY \u00B7 LAST 30 DAYS"),
+                                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 } },
+                                    React.createElement("div", { style: { fontSize: 24, fontWeight: 800, color: MOBILITY_BLUE, lineHeight: 1 } }, ms.pct + "%"),
+                                    React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: "#3F5480" } }, ms.days + " of " + ms.window + " days logged")),
+                                React.createElement("div", { style: { height: 8, borderRadius: 4, background: "#DCE6F8", overflow: "hidden" } },
+                                    React.createElement("div", { style: { height: "100%", width: Math.max(2, ms.pct) + "%", background: MOBILITY_BLUE, borderRadius: 4 } })))));
+                    })(),
+                    React.createElement("div", { style: { padding: "0 16px", marginBottom: 8 } },
                         React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: C.muted } }, "LIFTS \u00B7 BY SESSION"))),
                     list.length === 0 ? (React.createElement("div", { style: { margin: "0 16px", padding: "26px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
                         React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "Nothing to compare yet"),
@@ -3696,6 +3822,95 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                             React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, b.label))))),
                         React.createElement("p", { style: { fontSize: 11.5, lineHeight: 1.45, color: C.muted, margin: "12px 0 0" } }, "Scoped to one block so the program stays fixed \u2014 an exercise is compared only against itself under the same setup. Abs and Calves are left out.")))))));
             })())));
+    })()),
+React.createElement("div", null, moduleOn(enabledModules, "mobility") && mobilityView && (() => {
+        const todayKey = dateKey(new Date());
+        const dk = mobilityDate || todayKey;
+        const d = keyToDate(dk);
+        const chosen = mobilityDayList(mobilityLog, dk);
+        const month = mobilityMonth || startOfMonth(d);
+        const cells = buildMonthGrid(month);
+        const rows = [];
+        for (let i = 0; i < cells.length; i += 7)
+            rows.push(cells.slice(i, i + 7));
+        const stats = progMobilityStats(mobilityLog, todayKey);
+        return (React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 34, background: "#fff", display: "flex", flexDirection: "column" } },
+            React.createElement("div", { style: { padding: "calc(env(safe-area-inset-top, 0px) + 16px) 16px 14px", borderBottom: "1px solid #ECE7DE", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+                React.createElement("button", { onClick: () => setMobilityView(null), style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 14px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer" } }, "\u2039 Back"),
+                React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } }, "Mobility"),
+                React.createElement("button", { onClick: () => { if (mobilityView === "day") {
+                        setMobilityMonth(startOfMonth(d));
+                        setMobilityView("calendar");
+                    }
+                    else {
+                        setMobilityView("day");
+                    } }, style: { border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, padding: "9px 12px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: MOBILITY_BLUE, cursor: "pointer" } }, mobilityView === "day" ? "Calendar" : "Today")),
+            React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: "16px 0 24px" } },
+                React.createElement("div", { style: { padding: "0 16px", marginBottom: 16 } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 13, background: MOBILITY_BLUE_SOFT } },
+                        React.createElement("div", { style: { fontSize: 24, fontWeight: 800, color: MOBILITY_BLUE, lineHeight: 1 } },
+                            stats.pct,
+                            "%"),
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: "#3F5480" } },
+                            stats.days,
+                            " of the last ",
+                            stats.window,
+                            " days"))),
+                mobilityView === "day" ? (React.createElement("div", null,
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", marginBottom: 14 } },
+                        React.createElement("button", { onClick: () => setMobilityDate(dateKey(addDays(d, -1))), style: { padding: "10px 16px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "\u2039"),
+                        React.createElement("div", { style: { textAlign: "center" } },
+                            React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: C.ink } }, dk === todayKey ? "Today" : formatLongDate(d)),
+                            dk === todayKey && React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.muted, marginTop: 2 } }, formatLongDate(d))),
+                        React.createElement("button", { onClick: () => { const n = addDays(d, 1); if (dateKey(n) <= todayKey)
+                                setMobilityDate(dateKey(n)); }, disabled: dk >= todayKey, style: { padding: "10px 16px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 13, fontWeight: 700, color: dk >= todayKey ? "#D8D1C5" : "#5E574C", cursor: dk >= todayKey ? "default" : "pointer", fontFamily: "inherit" } }, "\u203A")),
+                    React.createElement("div", { style: { padding: "0 16px" } },
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 } },
+                                React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: C.muted } }, "DRILLS"),
+                                mobilityModalities.length > 0 && React.createElement("button", { onClick: () => setMobilityEditing(!mobilityEditing), style: { border: "none", background: "transparent", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: mobilityEditing ? MOBILITY_BLUE : C.muted, cursor: "pointer", padding: 0 } }, mobilityEditing ? "Done" : "Edit")),
+                            mobilityModalities.length === 0
+                                ? React.createElement("div", { style: { padding: "22px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
+                                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "No drills yet"),
+                                    React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4, marginBottom: 12 } }, "Add the mobility work you actually do. Tap one each day to log it."),
+                                    React.createElement("button", { onClick: mobilityAddModality, style: { padding: "10px 18px", border: "none", borderRadius: 999, background: MOBILITY_BLUE, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "+ Add a Drill"))
+                                : React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 7 } },
+                                    mobilityModalities.map((m) => {
+                                        const on = chosen.indexOf(m.id) >= 0;
+                                        if (mobilityEditing) {
+                                            return React.createElement("button", { key: m.id, onClick: () => mobilityRemoveModality(m), style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 12px", borderRadius: 999, border: "1.5px solid #E6BDBD", background: "#FDF3F3", color: "#C0392B", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer" } },
+                                                React.createElement("span", null, m.label),
+                                                React.createElement("span", { style: { fontSize: 13, fontWeight: 800 } }, "\u2715"));
+                                        }
+                                        return React.createElement("button", { key: m.id, onClick: () => mobilityToggle(dk, m.id), style: { padding: "9px 14px", borderRadius: 999, border: on ? ("1.5px solid " + MOBILITY_BLUE) : "1.5px solid #E7E1D7", background: on ? MOBILITY_BLUE : "#fff", color: on ? "#fff" : "#5E574C", fontFamily: "inherit", fontSize: 12.5, fontWeight: on ? 800 : 600, cursor: "pointer" } }, m.label);
+                                    }),
+                                    !mobilityEditing && React.createElement("button", { key: "__add", onClick: mobilityAddModality, style: { padding: "9px 14px", borderRadius: 999, border: "1.5px dashed #C3CFE6", background: "#fff", color: MOBILITY_BLUE, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, "+"))),
+                        React.createElement("div", { style: { padding: "16px 16px 0", fontSize: 11.5, color: C.muted, lineHeight: 1.4 } }, chosen.length === 0 ? "Nothing logged for this day yet. Tap any drill you did." : `${chosen.length} logged. Tap again to remove.`))) : (React.createElement("div", null,
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", marginBottom: 14 } },
+                        React.createElement("button", { onClick: () => setMobilityMonth(addDays(startOfMonth(month), -1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
+                        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.ink } },
+                            MONTH_NAMES[month.getMonth()],
+                            " ",
+                            month.getFullYear()),
+                        React.createElement("button", { onClick: () => setMobilityMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Next")),
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", padding: "0 16px", marginBottom: 6 } }, WEEKDAY_LETTERS.map((w, i) => React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, w))),
+                    React.createElement("div", { style: { padding: "0 16px" } }, rows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)" } }, row.map((cell, ci) => {
+                        const cdk = dateKey(cell.date);
+                        const has = cell.inMonth && mobilityHasAny(mobilityLog, cdk);
+                        const future = cdk > todayKey;
+                        const isToday = cdk === todayKey;
+                        return (React.createElement("div", { key: ci, style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "3px 0" } },
+                            React.createElement("button", { disabled: !cell.inMonth || future, onClick: () => { setMobilityDate(cdk); setMobilityView("day"); }, style: {
+                                    width: 38, height: 38, borderRadius: 10, cursor: (!cell.inMonth || future) ? "default" : "pointer",
+                                    border: isToday ? `2.5px solid ${TODAY_BLUE}` : "1px solid transparent",
+                                    background: has ? MOBILITY_BLUE : "transparent",
+                                    color: has ? "#fff" : (cell.inMonth && !future ? C.ink : "#D8D2C6"),
+                                    fontSize: 13.5, fontWeight: has ? 800 : 600, fontFamily: "inherit",
+                                } }, cell.date.getDate())));
+                    }))))),
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "16px 16px 0" } },
+                        React.createElement("div", { style: { width: 14, height: 14, borderRadius: 4, background: MOBILITY_BLUE } }),
+                        React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "Mobility logged"),
+                        React.createElement("span", { style: { fontSize: 11.5, color: C.muted, marginLeft: 6 } }, "\u00B7 tap any day to edit it")))))));
     })()),
             moduleOn(enabledModules, "cardio") && cardioView === "main" && (() => {
                 const progression = cardioWeekProgression(cardioSessions);
