@@ -757,35 +757,69 @@ function ptHeadline(plan) {
 const FEATURE_MOBILITY = true;
 const MOBILITY_BLUE = "#2B5FCC";
 const MOBILITY_BLUE_SOFT = "#EAF0FC";
-const MOBILITY_WINDOW_DAYS = 30; // fixed denominator, on purpose — see below
+const MOBILITY_BLUE_MID = "#93AEE6"; // one session logged; solid blue means both
+const MOBILITY_WINDOW_DAYS = 20; // fixed denominator, on purpose — see below
+const MOBILITY_SLOTS = ["am", "pm"];
+// Each day holds two independent sessions. 20 days x 2 slots = 40 slots, so a
+// single session is worth exactly 2.5% and a full day 5% — which is why the
+// window is 20 rather than 30.
 // The modality list is user data, not a fixed list — it starts empty and is
 // built up with the + button. Each entry is { id, label }; the id is what gets
 // written into mobilityLog, so renaming a label is safe while removing an
-// entry leaves previously logged days intact (they simply stop showing that
-// pill). Such a day still counts toward the 30-day figure, which is right —
-// you did do the work, even if the drill has since left the list.
-function mobilityDayList(mobilityLog, dk) {
+// entry leaves previously logged days intact.
+
+// Stored shape is { dateKey: { am: [ids], pm: [ids] } }. Days written before
+// AM/PM existed are a bare array; those are read as an AM session so nothing
+// already logged is lost or silently reassigned.
+function mobilityDayEntry(mobilityLog, dk) {
     const v = (mobilityLog || {})[dk];
-    return Array.isArray(v) ? v : [];
+    if (!v)
+        return { am: [], pm: [] };
+    if (Array.isArray(v))
+        return { am: v.slice(), pm: [] };
+    return { am: Array.isArray(v.am) ? v.am : [], pm: Array.isArray(v.pm) ? v.pm : [] };
+}
+function mobilitySlotList(mobilityLog, dk, slot) {
+    const e = mobilityDayEntry(mobilityLog, dk);
+    return slot === "pm" ? e.pm : e.am;
+}
+// Every modality logged that day, either slot. Used to enforce once-per-day.
+function mobilityDayList(mobilityLog, dk) {
+    const e = mobilityDayEntry(mobilityLog, dk);
+    return e.am.concat(e.pm);
 }
 function mobilityHasAny(mobilityLog, dk) {
-    return mobilityDayList(mobilityLog, dk).length > 0;
+    const e = mobilityDayEntry(mobilityLog, dk);
+    return e.am.length > 0 || e.pm.length > 0;
 }
-// Share of the last 30 calendar days with anything logged. The denominator is
-// always 30 — never "days since you started" — so the figure begins at 0% and
-// climbs as the habit builds, rather than opening at a flattering 100% off a
-// single day. Today counts only once something is actually logged, which
-// falls out naturally from counting non-empty days.
+// 0, 1 or 2 — drives both the metric and the calendar's two shades.
+function mobilitySessionCount(mobilityLog, dk) {
+    const e = mobilityDayEntry(mobilityLog, dk);
+    return (e.am.length > 0 ? 1 : 0) + (e.pm.length > 0 ? 1 : 0);
+}
+// Share of the last 20 days' worth of session slots that were filled. The
+// denominator is always 40 — never "slots since you started" — so the figure
+// begins at 0% and climbs as the habit builds.
 function progMobilityStats(mobilityLog, todayKey) {
     if (!FEATURE_MOBILITY)
         return null;
     const end = keyToDate(todayKey);
-    let days = 0;
+    let sessions = 0, days = 0;
     for (let i = 0; i < MOBILITY_WINDOW_DAYS; i++) {
-        if (mobilityHasAny(mobilityLog, dateKey(addDays(end, -i))))
+        const dk = dateKey(addDays(end, -i));
+        const n = mobilitySessionCount(mobilityLog, dk);
+        sessions += n;
+        if (n > 0)
             days++;
     }
-    return { days, window: MOBILITY_WINDOW_DAYS, pct: Math.round((days / MOBILITY_WINDOW_DAYS) * 100) };
+    const total = MOBILITY_WINDOW_DAYS * MOBILITY_SLOTS.length;
+    const pct = (sessions / total) * 100;
+    return {
+        sessions, days, total, window: MOBILITY_WINDOW_DAYS, pct,
+        // 2.5% per session means halves are real, so keep one decimal when
+        // there is one rather than rounding 32.5 to 33.
+        pctText: (Math.round(pct * 10) / 10).toString(),
+    };
 }
 // ============================================================
 // MOBILITY MODULE (end)
@@ -2495,20 +2529,26 @@ function App() {
         mobilityDirtyRef.current = true;
         setMobilityModalities((cur) => cur.filter((x) => x.id !== m.id));
     };
-    const mobilityToggle = (dk, modalityId) => {
+    const mobilityToggle = (dk, slot, modalityId) => {
         mobilityDirtyRef.current = true;
         setMobilityLog((cur) => {
-            const next = Object.assign({}, cur);
-            const list = Array.isArray(next[dk]) ? next[dk].slice() : [];
-            const i = list.indexOf(modalityId);
+            const e = mobilityDayEntry(cur, dk);
+            const mine = slot === "pm" ? e.pm.slice() : e.am.slice();
+            const other = slot === "pm" ? e.am : e.pm;
+            const i = mine.indexOf(modalityId);
             if (i >= 0)
-                list.splice(i, 1);
+                mine.splice(i, 1);
+            else if (other.indexOf(modalityId) >= 0)
+                return cur; // already done in the other slot — once per day
             else
-                list.push(modalityId);
-            if (list.length)
-                next[dk] = list;
+                mine.push(modalityId);
+            const next = Object.assign({}, cur);
+            const am = slot === "pm" ? e.am : mine;
+            const pm = slot === "pm" ? mine : e.pm;
+            if (am.length || pm.length)
+                next[dk] = { am, pm };
             else
-                delete next[dk]; // an empty day is an absent day, so the calendar clears
+                delete next[dk];
             return next;
         });
     };
@@ -3790,7 +3830,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                             extra.push({ key: "cardio", label: "Cardio", sub: cs.hit + " of " + cs.weeks + " week" + (cs.weeks === 1 ? "" : "s"), pct: cs.pct, colour: "#D7263D", track: "#F6E4E4" });
                         const ms = moduleOn(enabledModules, "mobility") ? progMobilityStats(mobilityLog, dateKey(new Date())) : null;
                         if (ms)
-                            extra.push({ key: "mobility", label: "Mobility", sub: ms.days + " of " + ms.window + " days", pct: ms.pct, colour: MOBILITY_BLUE, track: "#DCE6F8" });
+                            extra.push({ key: "mobility", label: "Mobility", sub: ms.sessions + " of " + ms.total + " sessions", pct: ms.pct, pctText: ms.pctText, colour: MOBILITY_BLUE, track: "#DCE6F8" });
                         if (!extra.length)
                             return null;
                         return (React.createElement("div", { style: { padding: "0 16px" } },
@@ -3801,7 +3841,7 @@ React.createElement("div", null, moduleOn(enabledModules, "progress") && progVie
                                 React.createElement("div", { style: { flex: "0 0 96px" } },
                                     React.createElement("div", { style: { height: 10, borderRadius: 5, background: r.track, overflow: "hidden" } },
                                         React.createElement("div", { style: { height: "100%", width: Math.max(3, r.pct) + "%", background: r.colour, borderRadius: 5 } }))),
-                                React.createElement("div", { style: { flex: "0 0 42px", textAlign: "right", fontSize: 13, fontWeight: 800, color: r.colour } }, r.pct + "%")))))));
+                                React.createElement("div", { style: { flex: "0 0 42px", textAlign: "right", fontSize: 13, fontWeight: 800, color: r.colour } }, (r.pctText !== undefined ? r.pctText : r.pct) + "%")))))));
                     })(),
                     list.length === 0 ? (React.createElement("div", { style: { margin: "0 16px", padding: "26px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
                         React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "Nothing to compare yet"),
@@ -3854,14 +3894,8 @@ React.createElement("div", null, moduleOn(enabledModules, "mobility") && mobilit
             React.createElement("div", { className: "wl-scroll", style: { flex: 1, overflow: "auto", padding: "16px 0 24px" } },
                 React.createElement("div", { style: { padding: "0 16px", marginBottom: 16 } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 13, background: MOBILITY_BLUE_SOFT } },
-                        React.createElement("div", { style: { fontSize: 24, fontWeight: 800, color: MOBILITY_BLUE, lineHeight: 1 } },
-                            stats.pct,
-                            "%"),
-                        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: "#3F5480" } },
-                            stats.days,
-                            " of the last ",
-                            stats.window,
-                            " days"))),
+                        React.createElement("div", { style: { fontSize: 24, fontWeight: 800, color: MOBILITY_BLUE, lineHeight: 1 } }, stats.pctText + "%"),
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: "#3F5480" } }, stats.sessions + " of " + stats.total + " sessions \u00B7 last " + stats.window + " days"))),
                 mobilityView === "day" ? (React.createElement("div", null,
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", marginBottom: 14 } },
                         React.createElement("button", { onClick: () => setMobilityDate(dateKey(addDays(d, -1))), style: { padding: "10px 16px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 13, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "\u2039"),
@@ -3879,17 +3913,32 @@ React.createElement("div", null, moduleOn(enabledModules, "mobility") && mobilit
                                     React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "No drills yet"),
                                     React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4, marginBottom: 12 } }, "Add the mobility work you actually do. Tap one each day to log it."),
                                     React.createElement("button", { onClick: mobilityAddModality, style: { padding: "10px 18px", border: "none", borderRadius: 999, background: MOBILITY_BLUE, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "+ Add a Drill"))
-                                : React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } },
-                                    mobilityModalities.map((m) => {
-                                        const on = chosen.indexOf(m.id) >= 0;
-                                        if (mobilityEditing) {
-                                            return React.createElement("button", { key: m.id, onClick: () => mobilityRemoveModality(m), style: { flex: "1 1 calc(50% - 5px)", minHeight: 62, padding: 15, borderRadius: 14, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, border: "2px solid #E6BDBD", background: "#FDF3F3", color: "#C0392B", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" } },
-                                                React.createElement("span", null, m.label),
-                                                React.createElement("span", { style: { fontSize: 13, fontWeight: 800 } }, "\u2715"));
-                                        }
-                                        return React.createElement("button", { key: m.id, onClick: () => mobilityToggle(dk, m.id), style: { flex: "1 1 calc(50% - 5px)", minHeight: 62, padding: 15, borderRadius: 14, border: on ? ("2px solid " + MOBILITY_BLUE) : "2px solid #E7E1D7", background: on ? MOBILITY_BLUE : "#fff", color: on ? "#fff" : "#5E574C", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" } }, m.label);
-                                    }),
-                                    !mobilityEditing && React.createElement("button", { key: "__add", onClick: mobilityAddModality, style: { flex: "1 1 calc(50% - 5px)", minHeight: 62, padding: 15, borderRadius: 14, border: "2px dashed #C3CFE6", background: "#fff", color: MOBILITY_BLUE, fontFamily: "inherit", fontSize: 20, fontWeight: 800, cursor: "pointer" } }, "+"))),
+                                : mobilityEditing
+                                    ? React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, mobilityModalities.map((m) => (React.createElement("button", { key: m.id, onClick: () => mobilityRemoveModality(m), style: { flex: "1 1 calc(50% - 5px)", minHeight: 62, padding: 15, borderRadius: 14, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, border: "2px solid #E6BDBD", background: "#FDF3F3", color: "#C0392B", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" } },
+                                        React.createElement("span", null, m.label),
+                                        React.createElement("span", { style: { fontSize: 14, fontWeight: 800 } }, "\u2715")))))
+                                    : React.createElement("div", null,
+                                        React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 10 } }, MOBILITY_SLOTS.map((slot) => {
+                                            const n = mobilitySlotList(mobilityLog, dk, slot).length;
+                                            return React.createElement("div", { key: slot, style: { flex: "1 1 0", padding: "8px 10px", borderRadius: 8, textAlign: "center", background: n ? MOBILITY_BLUE : "#F1EDE6", color: n ? "#fff" : C.muted, fontSize: 11.5, fontWeight: 800, letterSpacing: ".04em" } },
+                                                slot.toUpperCase() + " \u00B7 " + (n ? n + " logged" : "none yet"));
+                                        })),
+                                        React.createElement("div", { style: { display: "flex", gap: 10 } }, MOBILITY_SLOTS.map((slot) => (React.createElement("div", { key: slot, style: { flex: "1 1 0", display: "flex", flexDirection: "column", gap: 10 } }, mobilityModalities.map((m) => {
+                                            const on = mobilitySlotList(mobilityLog, dk, slot).indexOf(m.id) >= 0;
+                                            // Once per day: if it was done in the other slot, this
+                                            // one is shown spent rather than silently ignoring taps.
+                                            const otherSlot = slot === "am" ? "pm" : "am";
+                                            const usedElsewhere = !on && mobilitySlotList(mobilityLog, dk, otherSlot).indexOf(m.id) >= 0;
+                                            return React.createElement("button", { key: m.id, disabled: usedElsewhere, onClick: () => mobilityToggle(dk, slot, m.id), title: usedElsewhere ? "Already logged in " + otherSlot.toUpperCase() : "", style: {
+                                                    minHeight: 62, padding: "10px 8px", borderRadius: 14,
+                                                    border: on ? ("2px solid " + MOBILITY_BLUE) : (usedElsewhere ? "2px dashed #DFDAD1" : "2px solid #E7E1D7"),
+                                                    background: on ? MOBILITY_BLUE : (usedElsewhere ? "#F7F5F1" : "#fff"),
+                                                    color: on ? "#fff" : (usedElsewhere ? "#BDB6AA" : "#5E574C"),
+                                                    fontFamily: "inherit", fontSize: 12.5, fontWeight: 800,
+                                                    cursor: usedElsewhere ? "default" : "pointer", lineHeight: 1.25,
+                                                } }, usedElsewhere ? (m.label + " \u00B7 " + otherSlot.toUpperCase()) : m.label);
+                                        }))))),
+                                        React.createElement("button", { onClick: mobilityAddModality, style: { width: "100%", marginTop: 10, minHeight: 48, padding: 12, borderRadius: 14, border: "2px dashed #C3CFE6", background: "#fff", color: MOBILITY_BLUE, fontFamily: "inherit", fontSize: 18, fontWeight: 800, cursor: "pointer" } }, "+"))),
                         React.createElement("div", { style: { padding: "16px 16px 0", fontSize: 11.5, color: C.muted, lineHeight: 1.4 } }, chosen.length === 0 ? "Nothing logged for this day yet. Tap any drill you did." : `${chosen.length} logged. Tap again to remove.`))) : (React.createElement("div", null,
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", marginBottom: 14 } },
                         React.createElement("button", { onClick: () => setMobilityMonth(addDays(startOfMonth(month), -1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
@@ -3901,21 +3950,22 @@ React.createElement("div", null, moduleOn(enabledModules, "mobility") && mobilit
                     React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", padding: "0 16px", marginBottom: 6 } }, WEEKDAY_LETTERS.map((w, i) => React.createElement("div", { key: i, style: { textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: C.muted } }, w))),
                     React.createElement("div", { style: { padding: "0 16px" } }, rows.map((row, ri) => (React.createElement("div", { key: ri, style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)" } }, row.map((cell, ci) => {
                         const cdk = dateKey(cell.date);
-                        const has = cell.inMonth && mobilityHasAny(mobilityLog, cdk);
+                        const sessions = cell.inMonth ? mobilitySessionCount(mobilityLog, cdk) : 0;
+                                        const has = sessions > 0;
                         const future = cdk > todayKey;
                         const isToday = cdk === todayKey;
                         return (React.createElement("div", { key: ci, style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "3px 0" } },
                             React.createElement("button", { disabled: !cell.inMonth || future, onClick: () => { setMobilityDate(cdk); setMobilityView("day"); }, style: {
                                     width: 38, height: 38, borderRadius: 10, cursor: (!cell.inMonth || future) ? "default" : "pointer",
                                     border: isToday ? `2.5px solid ${TODAY_BLUE}` : "1px solid transparent",
-                                    background: has ? MOBILITY_BLUE : "transparent",
+                                    background: sessions === 2 ? MOBILITY_BLUE : (sessions === 1 ? MOBILITY_BLUE_MID : "transparent"),
                                     color: has ? "#fff" : (cell.inMonth && !future ? C.ink : "#D8D2C6"),
                                     fontSize: 13.5, fontWeight: has ? 800 : 600, fontFamily: "inherit",
                                 } }, cell.date.getDate())));
                     }))))),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "16px 16px 0" } },
                         React.createElement("div", { style: { width: 14, height: 14, borderRadius: 4, background: MOBILITY_BLUE } }),
-                        React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "Mobility logged"),
+                        React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "Both sessions"),
                         React.createElement("span", { style: { fontSize: 11.5, color: C.muted, marginLeft: 6 } }, "\u00B7 tap any day to edit it")))))));
     })()),
             moduleOn(enabledModules, "cardio") && cardioView === "main" && (() => {
