@@ -763,10 +763,52 @@ const MOBILITY_SLOTS = ["am", "pm"];
 // Each day holds two independent sessions. 20 days x 2 slots = 40 slots, so a
 // single session is worth exactly 2.5% and a full day 5% — which is why the
 // window is 20 rather than 30.
-// The modality list is user data, not a fixed list — it starts empty and is
-// built up with the + button. Each entry is { id, label }; the id is what gets
-// written into mobilityLog, so renaming a label is safe while removing an
-// entry leaves previously logged days intact.
+// Fixed list, edited here in the source rather than in the app. Ids are what
+// get written into mobilityLog, so they must stay stable — change a label
+// freely, but changing an id orphans previously logged days. `info` is shown
+// in the popup behind the ⓘ button; omit it where the drill needs no
+// explanation.
+const MOBILITY_MODALITIES = [
+    { id: "squat_drill", label: "Squat Drill" },
+    { id: "doorway_series", label: "Doorway Series",
+      info: "Doorway pec stretch, then wall slides.\n\nPec stretch: forearm on the frame, elbow at shoulder height, step through and turn away. 30s each side.\n\nWall slides: back flat to the wall, elbows out at 90°, slide the arms up and down keeping the wrists and elbows in contact." },
+    { id: "ytw_raises", label: "YTW Raises",
+      info: "Bent at the hips or on an incline, arms straight, thumbs up.\n\nY — raise into a Y overhead (lower trap).\nT — arms straight out to the sides (mid trap, rear delt).\nW — elbows bent, squeeze the shoulder blades and rotate the hands back (external rotation).\n\n8–10 each." },
+    { id: "ground_hip_flow", label: "Ground Hip Flow",
+      info: "One trip to the floor, four positions.\n\nChild's pose — knees wide, sit back, reach forward.\nFrog — knees wide on hands and knees, rock the hips back (adductors).\n90/90 — one leg front at 90°, one out to the side, rotate the knees side to side.\nPigeon — front shin across, back leg straight, fold forward. Both sides." },
+    { id: "standing_flow", label: "Standing Flow",
+      info: "Mountain with the arms overhead, into chair.\n\nTwisted chair — elbow to the opposite knee, rotate through the mid-back.\nFigure-4 chair — cross the ankle over the opposite knee and sit back on one leg.\n\nBoth sides. Balance, hip and thoracic rotation." },
+    { id: "wide_stance", label: "Wide Stance Routine",
+      info: "Cossack squats, then a bodyweight sumo hinge.\n\nCossack — wide stance, shift the weight to one side and sit down, the other leg straight. Adductors under load.\n\nSumo hinge — wide stance, hinge at the hips with a flat back. Hamstrings and adductors." },
+];
+// Old builds let the list be user-built, so logged days may carry generated
+// ids (mb_xxxx). This maps those onto the fixed ids by matching the label the
+// user had saved, so nothing already logged is lost.
+function mobilityNormalizeLabel(x) {
+    return String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function mobilityMigrateLog(mobilityLog, oldModalities) {
+    if (!Array.isArray(oldModalities) || !oldModalities.length)
+        return null;
+    const byNorm = {};
+    MOBILITY_MODALITIES.forEach((m) => { byNorm[mobilityNormalizeLabel(m.label)] = m.id; });
+    const remap = {};
+    oldModalities.forEach((om) => {
+        const target = byNorm[mobilityNormalizeLabel(om.label)];
+        if (target && om.id !== target)
+            remap[om.id] = target;
+    });
+    if (!Object.keys(remap).length)
+        return null;
+    const next = {};
+    let touched = false;
+    Object.keys(mobilityLog || {}).forEach((dk) => {
+        const e = mobilityDayEntry(mobilityLog, dk);
+        const conv = (arr) => arr.map((id) => { if (remap[id]) { touched = true; return remap[id]; } return id; });
+        next[dk] = { am: conv(e.am), pm: conv(e.pm) };
+    });
+    return touched ? next : null;
+}
 
 // Stored shape is { dateKey: { am: [ids], pm: [ids] } }. Days written before
 // AM/PM existed are a bare array; those are read as an AM session so nothing
@@ -877,13 +919,50 @@ function progExerciseEligible(entries, program, dk, ex) {
     }
     return false;
 }
+// Whether this exercise counts as having progressed. NOTE this is a stricter
+// question than "did any cell turn green", and deliberately so: at the same
+// weight, 13-13-13 -> 14-13-12 lights one green cell but the total is
+// unchanged — a rep was moved, not added. Judging on TOTAL reps catches that,
+// where a per-cell check would score it as progress.
+//
+// Cell colouring is untouched by this; individual sets still turn green /
+// yellow / red as they're entered.
 function progExerciseProgressed(entries, program, dk, ex) {
     const nSets = Math.max(1, ex.sets || 1);
-    for (let si = 0; si < nSets; si++) {
-        if (computeRepColor(entries, program, dk, ex, si) === "green")
-            return true;
+    const prevKey = findPrevSessionKey(entries, program, dk);
+    if (!prevKey)
+        return false;
+    const wCurRaw = entries[`wd|${program.id}|${dk}|${ex.rid}`];
+    const wPrevRaw = entries[`wd|${program.id}|${prevKey}|${ex.rid}`];
+    if (!wCurRaw || !wPrevRaw)
+        return false;
+    const wCur = parseFloat(wCurRaw), wPrev = parseFloat(wPrevRaw);
+    if (isNaN(wCur) || isNaN(wPrev))
+        return false;
+    // Weight went up: the load itself is the progression. computeRepColor
+    // already encodes that rule (every set must clear the rep-range floor,
+    // and then the final set greens), so defer to it rather than restate it.
+    if (wCur > wPrev) {
+        for (let si = 0; si < nSets; si++) {
+            if (computeRepColor(entries, program, dk, ex, si) === "green")
+                return true;
+        }
+        return false;
     }
-    return false;
+    // Weight went down: not progress.
+    if (wCur < wPrev)
+        return false;
+    // Same weight: total reps must have increased.
+    let curTotal = 0, prevTotal = 0;
+    for (let si = 0; si < nSets; si++) {
+        const c = parseInt(entries[`rd|${program.id}|${dk}|${ex.rid}|${si}`], 10);
+        const p = parseInt(entries[`rd|${program.id}|${prevKey}|${ex.rid}|${si}`], 10);
+        if (!isNaN(c))
+            curTotal += c;
+        if (!isNaN(p))
+            prevTotal += p;
+    }
+    return curTotal > prevTotal;
 }
 function progDayRate(entries, program, d) {
     if (!program)
@@ -1530,7 +1609,7 @@ function App() {
     // ---- PERSONAL TRAINER state (start) ----
     const [mobilityLog, setMobilityLog] = useState({}); // dateKey -> [modalityId]
     const [mobilityModalities, setMobilityModalities] = useState([]); // user-built list of { id, label }
-    const [mobilityEditing, setMobilityEditing] = useState(false);
+    const [mobilityInfo, setMobilityInfo] = useState(null); // modality whose explanation popup is open
     const [mobilityView, setMobilityView] = useState(null); // null | "day" | "calendar"
     const [mobilityDate, setMobilityDate] = useState(null); // dateKey being edited
     const [mobilityMonth, setMobilityMonth] = useState(null); // Date | null
@@ -2510,25 +2589,24 @@ function App() {
             location.reload();
         }
     };
+    // One-time remap of logged ids from the old user-built list onto the fixed
+    // ids above. Runs once, only rewrites when a label actually matches.
+    const mobMigratedRef = useRef(false);
+    useEffect(() => {
+        const t = setTimeout(() => {
+            if (mobMigratedRef.current)
+                return;
+            mobMigratedRef.current = true;
+            const st = stateRef.current;
+            const next = mobilityMigrateLog(st.mobilityLog, st.mobilityModalities);
+            if (next) {
+                mobilityDirtyRef.current = true;
+                setMobilityLog(next);
+            }
+        }, 1400);
+        return () => clearTimeout(t);
+    }, []);
     // ---- MOBILITY handlers ----
-    const mobilityAddModality = () => {
-        const name = window.prompt("Name of the drill (e.g. Hip Openers)");
-        if (!name || !name.trim())
-            return;
-        const label = name.trim();
-        if (mobilityModalities.some((m) => m.label.toLowerCase() === label.toLowerCase()))
-            return; // already on the list
-        const id = "mb_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        mobilityDirtyRef.current = true;
-        setMobilityModalities((cur) => [...cur, { id, label }]);
-    };
-    const mobilityRemoveModality = (m) => {
-        const ok = window.confirm(`Remove "${m.label}" from the list? Days you already logged it on stay logged.`);
-        if (!ok)
-            return;
-        mobilityDirtyRef.current = true;
-        setMobilityModalities((cur) => cur.filter((x) => x.id !== m.id));
-    };
     const mobilityToggle = (dk, slot, modalityId) => {
         mobilityDirtyRef.current = true;
         setMobilityLog((cur) => {
@@ -3913,40 +3991,33 @@ React.createElement("div", null, moduleOn(enabledModules, "mobility") && mobilit
                         React.createElement("button", { onClick: () => { const n = addDays(d, 1); if (dateKey(n) <= todayKey)
                                 setMobilityDate(dateKey(n)); }, disabled: dk >= todayKey, style: { padding: "10px 16px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 13, fontWeight: 700, color: dk >= todayKey ? "#D8D1C5" : "#5E574C", cursor: dk >= todayKey ? "default" : "pointer", fontFamily: "inherit" } }, "\u203A")),
                     React.createElement("div", { style: { padding: "0 16px" } },
-                            React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 } },
-                                React.createElement("div", { style: { fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: C.muted } }, "DRILLS"),
-                                mobilityModalities.length > 0 && React.createElement("button", { onClick: () => setMobilityEditing(!mobilityEditing), style: { border: "none", background: "transparent", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: mobilityEditing ? MOBILITY_BLUE : C.muted, cursor: "pointer", padding: 0 } }, mobilityEditing ? "Done" : "Edit")),
-                            mobilityModalities.length === 0
-                                ? React.createElement("div", { style: { padding: "22px 16px", border: "1px dashed #D8D1C5", borderRadius: 12, textAlign: "center" } },
-                                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: C.ink, marginBottom: 4 } }, "No drills yet"),
-                                    React.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.4, marginBottom: 12 } }, "Add the mobility work you actually do. Tap one each day to log it."),
-                                    React.createElement("button", { onClick: mobilityAddModality, style: { padding: "10px 18px", border: "none", borderRadius: 999, background: MOBILITY_BLUE, color: "#fff", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "+ Add a Drill"))
-                                : mobilityEditing
-                                    ? React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, mobilityModalities.map((m) => (React.createElement("button", { key: m.id, onClick: () => mobilityRemoveModality(m), style: { flex: "1 1 calc(50% - 5px)", minHeight: 62, padding: 15, borderRadius: 14, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, border: "2px solid #E6BDBD", background: "#FDF3F3", color: "#C0392B", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" } },
-                                        React.createElement("span", null, m.label),
-                                        React.createElement("span", { style: { fontSize: 14, fontWeight: 800 } }, "\u2715")))))
-                                    : React.createElement("div", null,
-                                        React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 10 } }, MOBILITY_SLOTS.map((slot) => {
-                                            const n = mobilitySlotList(mobilityLog, dk, slot).length;
-                                            return React.createElement("div", { key: slot, style: { flex: "1 1 0", padding: "8px 10px", borderRadius: 8, textAlign: "center", background: n ? MOBILITY_BLUE : "#F1EDE6", color: n ? "#fff" : C.muted, fontSize: 11.5, fontWeight: 800, letterSpacing: ".04em" } },
-                                                slot.toUpperCase() + " \u00B7 " + (n ? n + " logged" : "none yet"));
-                                        })),
-                                        React.createElement("div", { style: { display: "flex", gap: 10 } }, MOBILITY_SLOTS.map((slot) => (React.createElement("div", { key: slot, style: { flex: "1 1 0", display: "flex", flexDirection: "column", gap: 10 } }, mobilityModalities.map((m) => {
-                                            const on = mobilitySlotList(mobilityLog, dk, slot).indexOf(m.id) >= 0;
-                                            // Once per day: if it was done in the other slot, this
-                                            // one is shown spent rather than silently ignoring taps.
-                                            const otherSlot = slot === "am" ? "pm" : "am";
-                                            const usedElsewhere = !on && mobilitySlotList(mobilityLog, dk, otherSlot).indexOf(m.id) >= 0;
-                                            return React.createElement("button", { key: m.id, disabled: usedElsewhere, onClick: () => mobilityToggle(dk, slot, m.id), title: usedElsewhere ? "Already logged in " + otherSlot.toUpperCase() : "", style: {
-                                                    minHeight: 62, padding: "10px 8px", borderRadius: 14,
-                                                    border: on ? ("2px solid " + MOBILITY_BLUE) : (usedElsewhere ? "2px dashed #DFDAD1" : "2px solid #E7E1D7"),
-                                                    background: on ? MOBILITY_BLUE : (usedElsewhere ? "#F7F5F1" : "#fff"),
-                                                    color: on ? "#fff" : (usedElsewhere ? "#BDB6AA" : "#5E574C"),
-                                                    fontFamily: "inherit", fontSize: 12.5, fontWeight: 800,
-                                                    cursor: usedElsewhere ? "default" : "pointer", lineHeight: 1.25,
-                                                } }, usedElsewhere ? (m.label + " \u00B7 " + otherSlot.toUpperCase()) : m.label);
-                                        }))))),
-                                        React.createElement("button", { onClick: mobilityAddModality, style: { width: "100%", marginTop: 10, minHeight: 48, padding: 12, borderRadius: 14, border: "2px dashed #C3CFE6", background: "#fff", color: MOBILITY_BLUE, fontFamily: "inherit", fontSize: 18, fontWeight: 800, cursor: "pointer" } }, "+"))),
+                            React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 10 } },
+                                React.createElement("div", { style: { flex: "1 1 0", padding: "10px", borderRadius: 10, textAlign: "center", background: C.a, color: "#fff", fontSize: 13, fontWeight: 800, letterSpacing: ".08em" } }, "AM"),
+                                React.createElement("div", { style: { flex: "0 0 34px" } }),
+                                React.createElement("div", { style: { flex: "1 1 0", padding: "10px", borderRadius: 10, textAlign: "center", background: C.a, color: "#fff", fontSize: 13, fontWeight: 800, letterSpacing: ".08em" } }, "PM")),
+                            MOBILITY_MODALITIES.map((m) => {
+                                const cell = (slot) => {
+                                    const on = mobilitySlotList(mobilityLog, dk, slot).indexOf(m.id) >= 0;
+                                    const otherSlot = slot === "am" ? "pm" : "am";
+                                    // Once per day: if it was done in the other slot, this one is
+                                    // shown spent rather than silently ignoring taps.
+                                    const usedElsewhere = !on && mobilitySlotList(mobilityLog, dk, otherSlot).indexOf(m.id) >= 0;
+                                    return React.createElement("button", { key: slot, disabled: usedElsewhere, onClick: () => mobilityToggle(dk, slot, m.id), title: usedElsewhere ? "Already logged in " + otherSlot.toUpperCase() : "", style: {
+                                            flex: "1 1 0", minHeight: 62, padding: "10px 8px", borderRadius: 14,
+                                            border: on ? ("2px solid " + MOBILITY_BLUE) : (usedElsewhere ? "2px dashed #DFDAD1" : "2px solid #E7E1D7"),
+                                            background: on ? MOBILITY_BLUE : (usedElsewhere ? "#F7F5F1" : "#fff"),
+                                            color: on ? "#fff" : (usedElsewhere ? "#BDB6AA" : "#5E574C"),
+                                            fontFamily: "inherit", fontSize: 12.5, fontWeight: 800,
+                                            cursor: usedElsewhere ? "default" : "pointer", lineHeight: 1.25,
+                                        } }, usedElsewhere ? (m.label + " \u00B7 " + otherSlot.toUpperCase()) : m.label);
+                                };
+                                return React.createElement("div", { key: m.id, style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 } },
+                                    cell("am"),
+                                    m.info
+                                        ? React.createElement("button", { onClick: () => setMobilityInfo(m), title: "About this drill", style: { flex: "0 0 34px", width: 34, height: 34, borderRadius: 17, border: "1.5px solid " + MOBILITY_BLUE, background: "#fff", color: MOBILITY_BLUE, fontFamily: "Georgia, serif", fontSize: 15, fontWeight: 700, fontStyle: "italic", cursor: "pointer", padding: 0 } }, "i")
+                                        : React.createElement("div", { style: { flex: "0 0 34px" } }),
+                                    cell("pm"));
+                            })),
                         React.createElement("div", { style: { padding: "16px 16px 0", fontSize: 11.5, color: C.muted, lineHeight: 1.4 } }, chosen.length === 0 ? "Nothing logged for this day yet. Tap any drill you did." : `${chosen.length} logged. Tap again to remove.`))) : (React.createElement("div", null,
                     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", marginBottom: 14 } },
                         React.createElement("button", { onClick: () => setMobilityMonth(addDays(startOfMonth(month), -1)), style: { padding: "10px 18px", border: "1px solid #E7E1D7", background: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 700, color: "#5E574C", cursor: "pointer", fontFamily: "inherit" } }, "Prev"),
@@ -3962,23 +4033,18 @@ React.createElement("div", null, moduleOn(enabledModules, "mobility") && mobilit
                         const has = sessions > 0;
                         const future = cdk > todayKey;
                         const isToday = cdk === todayKey;
-                        // Same three channels as the dashboard calendar, but workouts and
-                        // cardio are faded right back. That de-emphasis is what signals
-                        // this calendar is in mobility mode — tapping a day logs mobility,
-                        // not a workout — without needing a banner to say so.
-                        const dayProgram = cell.inMonth ? resolveProgramForDate(programBlocks, programs, cell.date) : null;
-                        const didLift = !!(dayProgram && dayHasReps(entries, dayProgram, cell.date));
-                        const didCardio = moduleOn(enabledModules, "cardio") && cell.inMonth && cardioSessions.some((s) => s.date === cdk && s.durationSec >= CARDIO_FLOOR_SEC);
-                        return (React.createElement("div", { key: ci, style: { position: "relative", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "3px 0 12px" } },
-                            didLift && React.createElement("div", { style: { position: "absolute", top: 3, left: "50%", transform: "translateX(-50%)", width: 38, height: 38, borderRadius: 10, border: "2px solid #2FAE66", opacity: 0.28, pointerEvents: "none" } }),
+                        // This calendar is mobility-only on purpose. The dashboard calendar
+                        // is the place that shows all three channels together; duplicating
+                        // that here just added noise to a screen whose one job is logging
+                        // mobility for a chosen day.
+                        return (React.createElement("div", { key: ci, style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "3px 0" } },
                             React.createElement("button", { disabled: !cell.inMonth || future, onClick: () => { setMobilityDate(cdk); setMobilityView("day"); }, style: {
                                     width: 38, height: 38, borderRadius: 10, cursor: (!cell.inMonth || future) ? "default" : "pointer",
                                     border: isToday ? `2.5px solid ${TODAY_BLUE}` : "1px solid transparent",
                                     background: sessions === 2 ? MOBILITY_BLUE : (sessions === 1 ? MOBILITY_BLUE_MID : "transparent"),
                                     color: has ? "#fff" : (cell.inMonth && !future ? C.ink : "#D8D2C6"),
                                     fontSize: 13.5, fontWeight: has ? 800 : 600, fontFamily: "inherit",
-                                } }, cell.date.getDate()),
-                            didCardio && React.createElement("div", { style: { position: "absolute", bottom: 6, left: "50%", transform: "translateX(-50%)", width: 18, height: 3, borderRadius: 2, background: "#D7263D", opacity: 0.3, pointerEvents: "none" } })));
+                                } }, cell.date.getDate())));
                     }))))),
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "16px 16px 0" } },
                         React.createElement("div", { style: { width: 14, height: 14, borderRadius: 4, background: MOBILITY_BLUE } }),
@@ -3987,6 +4053,12 @@ React.createElement("div", null, moduleOn(enabledModules, "mobility") && mobilit
                         React.createElement("span", { style: { fontSize: 11.5, fontWeight: 600, color: C.ink } }, "One session"),
                         React.createElement("span", { style: { fontSize: 11.5, color: C.muted, marginLeft: 8 } }, "\u00B7 tap a day to log it")))))));
     })()),
+            moduleOn(enabledModules, "mobility") && mobilityInfo && (React.createElement("div", { onClick: () => setMobilityInfo(null), style: { position: "absolute", inset: 0, zIndex: 40, background: "rgba(38,34,29,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+                React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 340, maxHeight: "80%", overflow: "auto", background: "#fff", borderRadius: 16, padding: "18px 18px 16px", boxShadow: "0 14px 44px rgba(0,0,0,0.28)" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 10 } },
+                        React.createElement("div", { style: { fontSize: 16.5, fontWeight: 800, color: C.ink } }, mobilityInfo.label),
+                        React.createElement("button", { onClick: () => setMobilityInfo(null), style: { flexShrink: 0, width: 28, height: 28, border: "none", background: "#F1EDE6", borderRadius: 8, fontSize: 14, color: "#5E574C", cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+                    React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5, color: "#5E574C", whiteSpace: "pre-line" } }, mobilityInfo.info)))),
             moduleOn(enabledModules, "cardio") && cardioView === "main" && (() => {
                 const progression = cardioWeekProgression(cardioSessions);
                 const thisWeek = progression.length ? progression[progression.length - 1] : { target: CARDIO_WEEK1_TARGET, effective: 0, met: false };
