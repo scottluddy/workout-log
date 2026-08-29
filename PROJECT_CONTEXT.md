@@ -8,11 +8,22 @@ Last verified against the deployed file: ~300 KB, ~4,100 lines.
 ## What this is
 
 A personal training tracker, deployed on GitHub Pages at
-`scottluddy.github.io/workout-log/`. **One self-contained `index.html`** —
-compiled React (`React.createElement`, no JSX), no build step, no package
-manager. React, Supabase and SheetJS load from CDNs at runtime.
+`scottluddy.github.io/workout-log/`. Compiled React (`React.createElement`,
+no JSX), no build step, no package manager. React, Supabase and SheetJS load
+from CDNs at runtime.
 
-Files in the repo: `index.html`, `icon.png`,
+**Two files make up the app:** `index.html` holds the markup, styling, and
+all React-rendering code (`App()` and friends); `logic.js` holds every pure
+function and constant with no React/DOM dependency — date helpers, the
+module-flag registry, and the progression/rate math for Personal Trainer,
+Progress Tracker, Cardio and Mobility. `index.html` loads it with a plain
+`<script src="logic.js">` before its own inline script, so everything in
+`logic.js` is just an ordinary global to the rendering code, exactly as if
+it were still inline. The split exists so `logic.js` can also be
+`require()`d from Node for automated tests. Still no build step: both files
+are served as-is.
+
+Files in the repo: `index.html`, `logic.js`, `icon.png`,
 `Weekly_Program_Template.xlsx`, `Custom_Program_Template.xlsx`.
 
 Babel-in-browser was deliberately removed early on: it was unreliable, and
