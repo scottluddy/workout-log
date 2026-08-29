@@ -23,7 +23,7 @@ it were still inline. The split exists so `logic.js` can also be
 `require()`d from Node for automated tests. Still no build step: both files
 are served as-is.
 
-Files in the repo: `index.html`, `logic.js`, `icon.png`,
+Files in the repo: `index.html`, `logic.js`, `icon.png`, `test/`,
 `Weekly_Program_Template.xlsx`, `Custom_Program_Template.xlsx`.
 
 Babel-in-browser was deliberately removed early on: it was unreliable, and
@@ -167,6 +167,24 @@ denominator is fixed on purpose — it starts at 0% and climbs.
   history so it isn't all read as "no program scheduled."
 - **Mobility ids** — an earlier build let the drill list be user-built with
   generated ids; those are remapped onto the fixed ids by label match.
+
+## Tests
+
+`test/` holds Node's built-in test runner (`node:test` + `node:assert`) —
+zero dependencies, zero build step. Run with `npm test` or `node --test`.
+
+Covers the rules from "The rules that carry the philosophy" above, directly
+against `logic.js`: rep-cell colouring (including the custom-program
+same-day-type lookup, not a fixed 7-day one), Progress Tracker eligibility
+and the "moved not added" total-reps rule, the Cardio weekly target's
+ratchet-and-cap, and Mobility's fixed 20-day/40-slot window (including its
+exact edge and the half-percent rounding). Each of those was checked by
+temporarily breaking the corresponding rule in `logic.js` and confirming the
+matching test — and only that test — fails, then reverting.
+
+Not covered: anything that's genuinely rendering (JSX-shaped output,
+`App()`'s state/effects), and Supabase sync, which needs a live backend to
+exercise meaningfully.
 
 ## Constraints worth knowing
 

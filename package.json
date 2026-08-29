@@ -1,0 +1,8 @@
+{
+  "name": "workout-log",
+  "private": true,
+  "description": "Tests for logic.js — no build step, no dependencies. Run with: npm test",
+  "scripts": {
+    "test": "node --test"
+  }
+}
