@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Microwave Radio Sub-Band Catalog</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #d8dce2;
+    --text: #1c232b;
+    --muted: #8a94a3;
+    --accent: #1f5fbf;
+    --accent-weak: #e8f0fd;
+    --head-bg: #eef1f5;
+    --code-bg: #f1f3f6;
+    --verified-bg: #dff3e3; --verified-fg: #16713a;
+    --inferred-bg: #fdf1d6; --inferred-fg: #8a6100;
+    --unconfirmed-bg: #fbe1e1; --unconfirmed-fg: #a4282c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c;
+      --panel: #1c2129;
+      --border: #333a45;
+      --text: #e6e9ee;
+      --muted: #8790a0;
+      --accent: #6ba3ff;
+      --accent-weak: #1e2c42;
+      --head-bg: #232a34;
+      --code-bg: #232a34;
+      --verified-bg: #14301f; --verified-fg: #6fd995;
+      --inferred-bg: #3a2f0d; --inferred-fg: #e8c766;
+      --unconfirmed-bg: #3a1717; --unconfirmed-fg: #f18b8e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  header.top {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  }
+  header.top h1 { font-size: 15px; margin: 0 12px 0 0; white-space: nowrap; }
+  #search {
+    flex: 1 1 220px; min-width: 160px; padding: 7px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  .btn {
+    padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  .btn:hover { background: var(--head-bg); }
+  nav.tabs {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  nav.tabs.families { padding-top: 4px; }
+  .tab-btn {
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  .tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .family-group { display: flex; align-items: center; gap: 6px; margin-right: 10px; }
+  .family-group-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin-right: 2px;
+  }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  .family-header { margin-bottom: 14px; }
+  .family-header h2 { margin: 0 0 4px 0; font-size: 19px; }
+  .family-meta { color: var(--muted); font-size: 12.5px; }
+  .family-desc { margin: 6px 0 0 0; font-size: 13px; color: var(--text); }
+  details.band {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 10px; overflow: hidden;
+  }
+  details.band > summary {
+    list-style: none; cursor: pointer; padding: 10px 14px; background: var(--head-bg);
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
+  }
+  details.band > summary::-webkit-details-marker { display: none; }
+  details.band > summary::before { content: "▸ "; color: var(--muted); }
+  details.band[open] > summary::before { content: "▾ "; }
+  .band-name { font-weight: 700; font-size: 14px; }
+  .band-meta { color: var(--muted); font-size: 12px; }
+  .band-note { padding: 8px 14px 0 14px; color: var(--muted); font-size: 12px; font-style: italic; }
+  .empty-note { padding: 12px 14px; color: var(--muted); font-size: 13px; }
+  .table-scroll { overflow-x: auto; padding: 10px 14px 14px 14px; }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 12.5px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+  td.notes-cell, th.notes-cell { white-space: normal; min-width: 220px; }
+  th { background: var(--code-bg); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
+  tr:hover td { background: var(--accent-weak); }
+  .muted { color: var(--muted); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  }
+  .badge-verified { background: var(--verified-bg); color: var(--verified-fg); }
+  .badge-inferred { background: var(--inferred-bg); color: var(--inferred-fg); }
+  .badge-unconfirmed { background: var(--unconfirmed-bg); color: var(--unconfirmed-fg); }
+  .src-link { text-decoration: none; font-size: 14px; }
+  .search-banner {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 10px; font-size: 13px; color: var(--muted);
+  }
+  .search-banner strong { color: var(--text); }
+  footer.foot { padding: 20px 16px 40px; text-align: center; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>Microwave Radio Sub-Band Catalog</h1>
+  <input id="search" type="text" placeholder="Search part number or frequency (MHz)…" autocomplete="off">
+  <button class="btn" id="exportCsvBtn">Export view → CSV</button>
+  <button class="btn" id="exportJsonBtn">Export catalog → JSON</button>
+</header>
+
+<nav class="tabs" id="mfgTabs"></nav>
+<nav class="tabs families" id="familyTabs"></nav>
+
+<main id="main"></main>
+
+<footer class="foot">
+  Data entered by hand from vendor stores, distributor listings, and datasheets. A blank cell means the value is
+  genuinely unpublished or unconfirmed — never a filled-in guess.
+</footer>
+
+<script>
+/* ============================================================================
+   DATA MODEL — read this before adding rows
+   ============================================================================
+   CATALOG.manufacturers is an array of:
+     { id, name, families: [ ...family ] }
+
+   A family is one radio family/model line:
+     {
+       id, group,              // `group` clusters sub-tabs visually only
+                                // (e.g. "WTM 4000", "Eclipse") — it adds no
+                                // extra navigation level.
+       name,                   // shown as the sub-tab label
+       description,            // optional free text shown above the bands
+       last_verified,          // "YYYY-MM-DD" or null if not recorded —
+                                // never guess a date.
+       bands: [ ...band ]
+     }
+
+   A band is one frequency band's worth of rows for that family:
+     {
+       band,          // display label, e.g. "11 GHz" — any string works,
+                       // the renderer does not special-case band names.
+       model,         // "fixed_subband" | "tuning_range" | "full_band_tunable"
+                       // | null if not yet determined for this band.
+       tr_spacings,   // [MHz, ...] T/R spacings this band supports; [] if
+                       // not published.
+       rows: [ ...record ]     // [] is a valid, expected "scaffolded, no
+                                // data yet" state.
+     }
+
+   Three record shapes, selected by the band's `model`:
+
+   1) fixed_subband — the radio ships locked to a numbered sub-band with a
+      fixed Tx window. One row per sub-band PER hi/lo half.
+        {
+          type: "fixed_subband",
+          subband,             // vendor's own label, as a string: "01","B1","Ch1W6"
+          side,                // "low" | "high" | null (some vendors publish
+                                // Tx/Rx directly per sub-band with no
+                                // low/high terminology at all — see SIAE rows)
+          tx_min, tx_max,      // MHz, or null if genuinely unpublished
+          rx_min, rx_max,      // MHz, or null — the paired half, when published
+          tr_spacings,         // [MHz, ...] — usually mirrors the band's list
+          part_number,
+          pair_part_number,    // the other half's PN, when the datasheet pairs them
+          source_url,          // null if no citable link was found
+          source_type,         // "vendor" | "distributor" | "fcc_filing" | null
+          confidence,          // "verified" | "inferred" | "unconfirmed"
+          notes
+        }
+
+   2) tuning_range — the datasheet gives only full band edges plus a maximum
+      tuning window; the actual sub-band is set by the filter/branching
+      configuration at order time, not by the radio itself. No sub-band
+      number exists for these rows.
+        {
+          type: "tuning_range",
+          band_min, band_max,  // MHz, band edges — null if not restated for
+                                // this specific variant
+          max_tuning_range,    // MHz
+          tr_spacings,
+          source_url, source_type, confidence, notes
+        }
+
+   3) full_band_tunable — STUB ONLY, no data catalogued yet. For ODUs (e.g.
+      NEC "sub-band free" units) that tune anywhere in the band with no
+      filter change, so there is neither a sub-band number nor an ordered
+      tuning window. Shape, once populated:
+        {
+          type: "full_band_tunable",
+          band_min, band_max,
+          tr_spacings,
+          source_url, source_type, confidence, notes
+        }
+      The renderer (MODEL_INFO / renderBandTable below) already has a column
+      set and explanatory note wired up for this type — do not assume every
+      row has tx_min/tx_max when touching that code.
+
+   Rule for every field above: if a value is unknown, write `null`. Never
+   interpolate, round, or infer a number that wasn't explicitly published.
+   A blank cell is recoverable; a wrong number silently isn't.
+   ========================================================================== */
+
+const CATALOG = {
+  manufacturers: [
+    // ------------------------------------------------------------------ AVIAT
+    {
+      id: "aviat",
+      name: "Aviat",
+      families: [
+        {
+          id: "wtm-4200",
+          group: "WTM 4000",
+          name: "WTM 4200",
+          description: "",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "7 GHz", model: "fixed_subband", tr_spacings: [161], rows: [
+              { type: "fixed_subband", subband: "07", side: "high", tx_min: 7428, tx_max: 7516, rx_min: null, rx_max: null,
+                tr_spacings: [161], part_number: "W42-7H07-DPX", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] },
+            { band: "8 GHz", model: "fixed_subband", tr_spacings: [119, 126], rows: [
+              { type: "fixed_subband", subband: "11", side: "high", tx_min: 8397, tx_max: 8451, rx_min: null, rx_max: null,
+                tr_spacings: [119, 126], part_number: "W42-8H11-DPX", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [490, 500, 520, 530], rows: [
+              { type: "fixed_subband", subband: "01", side: "low", tx_min: null, tx_max: null, rx_min: null, rx_max: null,
+                tr_spacings: [490, 500, 520, 530], part_number: "W42-11L1-DPX", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed", notes: "Tx window not published" },
+              { type: "fixed_subband", subband: "01", side: "high", tx_min: 11200, tx_max: 11505, rx_min: null, rx_max: null,
+                tr_spacings: [490, 500, 520, 530], part_number: "W42-11H1-DPX", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" },
+              { type: "fixed_subband", subband: "02", side: "low", tx_min: 10915, tx_max: 11200, rx_min: null, rx_max: null,
+                tr_spacings: [490, 500, 520, 530], part_number: "W42-11L2-DPX", pair_part_number: "W42-11H2-DPX",
+                source_url: null, source_type: null, confidence: "verified", notes: "" },
+              { type: "fixed_subband", subband: "02", side: "high", tx_min: 11425, tx_max: 11705, rx_min: null, rx_max: null,
+                tr_spacings: [490, 500, 520, 530], part_number: "W42-11H2-DPX", pair_part_number: "W42-11L2-DPX",
+                source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [1008, 1010, 1092.5, 1120], rows: [
+              { type: "fixed_subband", subband: "04", side: "high", tx_min: 19095, tx_max: 19700, rx_min: null, rx_max: null,
+                tr_spacings: [1008, 1010, 1092.5, 1120], part_number: "W42-18H4-DPX", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "wtm-4100",
+          group: "WTM 4000",
+          name: "WTM 4100",
+          description: "Scaffolded — no rows catalogued yet.",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "wtm-4800",
+          group: "WTM 4000",
+          name: "WTM 4800",
+          description: "Scaffolded — no rows catalogued yet.",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "eclipse-odu600",
+          group: "Eclipse",
+          name: "ODU 600",
+          description: "",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "tuning_range", tr_spacings: [252.04, 340], rows: [
+              { type: "tuning_range", band_min: 5925, band_max: 6425, max_tuning_range: 56,
+                tr_spacings: [252.04, 340], source_url: null, source_type: null, confidence: "verified", notes: "L6" },
+              { type: "tuning_range", band_min: 6425, band_max: 7110, max_tuning_range: 56,
+                tr_spacings: [252.04, 340], source_url: null, source_type: null, confidence: "verified", notes: "U6" }
+            ] },
+            { band: "11 GHz", model: "tuning_range", tr_spacings: [490, 530], rows: [
+              { type: "tuning_range", band_min: 10700, band_max: 11700, max_tuning_range: 165,
+                tr_spacings: [490, 530], source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] },
+            { band: "18 GHz", model: "tuning_range", tr_spacings: [1010, 1092.5, 1120], rows: [
+              { type: "tuning_range", band_min: 17700, band_max: 19700, max_tuning_range: 380,
+                tr_spacings: [1010, 1092.5, 1120], source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] },
+            { band: "23 GHz", model: "tuning_range", tr_spacings: [1008, 1200, 1232], rows: [
+              { type: "tuning_range", band_min: 21200, band_max: 23632, max_tuning_range: 370,
+                tr_spacings: [1008, 1200, 1232], source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] }
+          ]
+        },
+        {
+          id: "eclipse-odu600v2",
+          group: "Eclipse",
+          name: "ODU 600v2",
+          description: "Modeled as a separate family from ODU 600, not an edit to it — the two differ in supported T/R spacings and max tuning range.",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "tuning_range", tr_spacings: [490, 500, 520, 530], rows: [
+              { type: "tuning_range", band_min: null, band_max: null, max_tuning_range: 305,
+                tr_spacings: [490, 500, 520, 530], source_url: null, source_type: null, confidence: "verified",
+                notes: "Band edges not separately restated for v2 in the source; only the T/R spacings and max tuning window differ from ODU 600" }
+            ] },
+            { band: "18 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "tuning_range", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "eclipse-iru600",
+          group: "Eclipse",
+          name: "IRU 600",
+          description: "Scaffolded — no rows catalogued yet.",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "18 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "tuning_range", tr_spacings: [], rows: [] }
+          ]
+        }
+      ]
+    },
+    // ---------------------------------------------------------------- CAMBIUM
+    {
+      id: "cambium",
+      name: "Cambium",
+      families: [
+        {
+          id: "ptp-820",
+          group: null,
+          name: "PTP 820",
+          description: "Cambium PTP 820/850 is rebadged Ceragon IP-20 — these rows also describe the equivalent Ceragon RFUs. Rows below are specifically from the PTP 820C variant.",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [500], rows: [
+              { type: "fixed_subband", subband: "Ch1W6", side: "low", tx_min: 10695, tx_max: 10955, rx_min: null, rx_max: null,
+                tr_spacings: [500], part_number: "C110082B030A", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" },
+              { type: "fixed_subband", subband: "Ch1W6", side: "high", tx_min: 11185, tx_max: 11485, rx_min: null, rx_max: null,
+                tr_spacings: [500], part_number: "C110082B029", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" },
+              { type: "fixed_subband", subband: "Ch7W13", side: "low", tx_min: 10915, tx_max: 11207, rx_min: null, rx_max: null,
+                tr_spacings: [500], part_number: "C110082B056A / C110082L028A", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "Two catalog SKUs listed for this sub-band/side" },
+              { type: "fixed_subband", subband: "Ch7W13", side: "high", tx_min: 11425, tx_max: 11725, rx_min: null, rx_max: null,
+                tr_spacings: [500], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "Tx range verified; part number unconfirmed" }
+            ] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [1560], rows: [
+              { type: "fixed_subband", subband: "ChAll", side: "low", tx_min: 17699, tx_max: 18150, rx_min: null, rx_max: null,
+                tr_spacings: [1560], part_number: "C180082B024A", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" },
+              { type: "fixed_subband", subband: "ChAll", side: "high", tx_min: 19259, tx_max: 19710, rx_min: null, rx_max: null,
+                tr_spacings: [1560], part_number: "C180082B023A", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified", notes: "" }
+            ] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "ptp-850",
+          group: null,
+          name: "PTP 850",
+          description: "Cambium PTP 820/850 is rebadged Ceragon IP-20 — these rows also describe the equivalent Ceragon RFUs. Scaffolded — no rows catalogued yet.",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        }
+      ]
+    },
+    // ------------------------------------------------------------------ SIAE
+    {
+      id: "siae",
+      name: "SIAE",
+      families: [
+        {
+          id: "alfoplus",
+          group: null,
+          name: "ALFOplus",
+          description: "",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [
+              { type: "fixed_subband", subband: "3", side: null, tx_min: 11035, tx_max: 11215, rx_min: 11525, rx_max: 11705,
+                tr_spacings: [], part_number: "AP11-EO-LNK-B3", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified",
+                notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" }
+            ] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "alfoplus2",
+          group: null,
+          name: "ALFOplus2",
+          description: "",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 10715, tx_max: 10895, rx_min: 11205, rx_max: 11385,
+                tr_spacings: [], part_number: "AP2-11-X-LNK-B1", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified",
+                notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" },
+              { type: "fixed_subband", subband: "3", side: null, tx_min: 11035, tx_max: 11215, rx_min: 11525, rx_max: 11705,
+                tr_spacings: [], part_number: "AP2-11-O-LNK-B3", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified",
+                notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" }
+            ] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 17700, tx_max: 18140, rx_min: 19260, rx_max: 19700,
+                tr_spacings: [], part_number: "AP2-18-O-LNK-B1", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified",
+                notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" }
+            ] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "alfoplus2xg",
+          group: null,
+          name: "ALFOplus2XG",
+          description: "",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 10715, tx_max: 10895, rx_min: 11205, rx_max: 11385,
+                tr_spacings: [], part_number: "AP2-11-X-LNK-B1", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified",
+                notes: "Same part serves ALFOplus2 and ALFOplus2XG at 11 GHz; vendor does not use a low/high side label" },
+              { type: "fixed_subband", subband: "3", side: null, tx_min: 11035, tx_max: 11215, rx_min: 11525, rx_max: 11705,
+                tr_spacings: [], part_number: "AP2-11-O-LNK-B3", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified",
+                notes: "Same part serves ALFOplus2 and ALFOplus2XG at 11 GHz; vendor does not use a low/high side label" }
+            ] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 17700, tx_max: 18140, rx_min: 19260, rx_max: 19700,
+                tr_spacings: [], part_number: "AP2XG-18-O-LNK-B1", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "verified",
+                notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" }
+            ] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        }
+      ]
+    },
+    // ------------------------------------------------------------------- SAF
+    {
+      id: "saf",
+      name: "SAF",
+      families: [
+        {
+          id: "cfip-lumina",
+          group: null,
+          name: "CFIP Lumina",
+          description: "",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "fixed_subband", tr_spacings: [490], rows: [
+              { type: "fixed_subband", subband: "B", side: "high", tx_min: null, tx_max: null, rx_min: null, rx_max: null,
+                tr_spacings: [490], part_number: "I11HOT05HB", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "Part number encodes band/power/offset/sub-band/side — decoding the scheme would unlock the rest of the family" }
+            ] },
+            { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+          ]
+        },
+        {
+          id: "integra",
+          group: null,
+          name: "Integra",
+          description: "Scaffolded — record type not yet confirmed, no rows catalogued.",
+          last_verified: null,
+          bands: [
+            { band: "6 GHz", model: null, tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: null, tr_spacings: [], rows: [] },
+            { band: "18 GHz", model: null, tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: null, tr_spacings: [], rows: [] }
+          ]
+        }
+      ]
+    }
+  ]
+};
+
+/* ----------------------------------------------------------------------
+   FUTURE HOOK — FCC Part 101.147 channel plan overlay.
+   Not implemented. When it's built, channelPlans will be keyed by band
+   label (e.g. "11 GHz") holding that band's authorized channel plan, and
+   renderBandTable(mfg, fam, band, channelPlan) already accepts an optional
+   overlay argument so a channel column can be layered onto a band's table
+   without changing how fixed_subband/tuning_range rows render.
+   ---------------------------------------------------------------------- */
+const channelPlans = {
+  // "11 GHz": { standard: "FCC Part 101.147(m)", channels: [ ... ] }
+};
+
+/* ============================================================================
+   RENDERING
+   ============================================================================ */
+
+const MODEL_INFO = {
+  fixed_subband: {
+    label: "Fixed sub-band",
+    note: "Fixed sub-band radio — one row per numbered sub-band/side with a locked Tx window."
+  },
+  tuning_range: {
+    label: "Tuning range",
+    note: "Tuning-range radio — datasheet gives only band edges and a max tuning window; the sub-band is set by filter/branching selection at order time, not by the radio."
+  },
+  full_band_tunable: {
+    label: "Full-band tunable",
+    note: "Full-band tunable ODU — tunes anywhere within the band edges, no filter change required. (stub — no data catalogued yet)"
+  }
+};
+const UNKNOWN_MODEL_NOTE = "Record type not yet determined for this band.";
+
+const CONFIDENCE_LABEL = { verified: "Verified", inferred: "Inferred", unconfirmed: "Unconfirmed" };
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function fmtVal(v) {
+  return (v === null || v === undefined || v === "") ? '<span class="muted">—</span>' : escapeHtml(v);
+}
+
+function fmtSpacings(arr) {
+  return (!arr || arr.length === 0) ? '<span class="muted">—</span>' : escapeHtml(arr.join(" / ") + " MHz");
+}
+
+function fmtSpacingsPlain(arr) {
+  return (!arr || arr.length === 0) ? "not recorded" : arr.join(" / ") + " MHz";
+}
+
+function confBadge(conf) {
+  if (!conf) return '<span class="muted">—</span>';
+  const label = CONFIDENCE_LABEL[conf] || conf;
+  return `<span class="badge badge-${escapeHtml(conf)}">${escapeHtml(label)}</span>`;
+}
+
+function sourceIcon(url, type) {
+  if (!url) return '<span class="muted">—</span>';
+  const safeUrl = escapeHtml(url);
+  const title = escapeHtml(type || "source");
+  return `<a class="src-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${title}">&#128279;</a>`;
+}
+
+function renderFixedRow(r) {
+  return `<tr>
+    <td>${fmtVal(r.subband)}</td>
+    <td>${fmtVal(r.side)}</td>
+    <td>${fmtVal(r.tx_min)}</td>
+    <td>${fmtVal(r.tx_max)}</td>
+    <td>${fmtVal(r.rx_min)}</td>
+    <td>${fmtVal(r.rx_max)}</td>
+    <td>${fmtSpacings(r.tr_spacings)}</td>
+    <td>${fmtVal(r.part_number)}</td>
+    <td>${fmtVal(r.pair_part_number)}</td>
+    <td>${sourceIcon(r.source_url, r.source_type)}</td>
+    <td>${confBadge(r.confidence)}</td>
+    <td class="notes-cell">${fmtVal(r.notes || null)}</td>
+  </tr>`;
+}
+
+function renderTuningRow(r) {
+  return `<tr>
+    <td>${fmtVal(r.band_min)}</td>
+    <td>${fmtVal(r.band_max)}</td>
+    <td>${fmtVal(r.max_tuning_range)}</td>
+    <td>${fmtSpacings(r.tr_spacings)}</td>
+    <td>${sourceIcon(r.source_url, r.source_type)}</td>
+    <td>${confBadge(r.confidence)}</td>
+    <td class="notes-cell">${fmtVal(r.notes || null)}</td>
+  </tr>`;
+}
+
+function renderFullBandRow(r) {
+  return `<tr>
+    <td>${fmtVal(r.band_min)}</td>
+    <td>${fmtVal(r.band_max)}</td>
+    <td>${fmtSpacings(r.tr_spacings)}</td>
+    <td>${sourceIcon(r.source_url, r.source_type)}</td>
+    <td>${confBadge(r.confidence)}</td>
+    <td class="notes-cell">${fmtVal(r.notes || null)}</td>
+  </tr>`;
+}
+
+// channelPlan: reserved for the future overlay hook described above; unused today.
+function renderBandTable(mfg, fam, band, channelPlan) {
+  const rows = band.rows || [];
+  const info = band.model ? (MODEL_INFO[band.model] || null) : null;
+  const note = info ? info.note : UNKNOWN_MODEL_NOTE;
+  const label = info ? info.label : "Unknown";
+  let body;
+
+  if (!band.model) {
+    body = `<p class="empty-note">No data yet — record type not determined for this band.</p>`;
+  } else if (rows.length === 0) {
+    body = `<p class="empty-note">No data found yet for this band.</p>`;
+  } else if (band.model === "fixed_subband") {
+    body = `<table>
+      <thead><tr>
+        <th>Sub-band</th><th>Side</th><th>Tx Min (MHz)</th><th>Tx Max (MHz)</th>
+        <th>Rx Min (MHz)</th><th>Rx Max (MHz)</th><th>T/R Spacings</th>
+        <th>Part Number</th><th>Paired PN</th><th>Source</th><th>Confidence</th>
+        <th class="notes-cell">Notes</th>
+      </tr></thead>
+      <tbody>${rows.map(renderFixedRow).join("")}</tbody>
+    </table>`;
+  } else if (band.model === "tuning_range") {
+    body = `<table>
+      <thead><tr>
+        <th>Band Min (MHz)</th><th>Band Max (MHz)</th><th>Max Tuning Range (MHz)</th>
+        <th>T/R Spacings</th><th>Source</th><th>Confidence</th><th class="notes-cell">Notes</th>
+      </tr></thead>
+      <tbody>${rows.map(renderTuningRow).join("")}</tbody>
+    </table>`;
+  } else if (band.model === "full_band_tunable") {
+    body = `<table>
+      <thead><tr>
+        <th>Band Min (MHz)</th><th>Band Max (MHz)</th><th>T/R Spacings</th>
+        <th>Source</th><th>Confidence</th><th class="notes-cell">Notes</th>
+      </tr></thead>
+      <tbody>${rows.map(renderFullBandRow).join("")}</tbody>
+    </table>`;
+  } else {
+    body = `<p class="empty-note">Unrecognized record type "${escapeHtml(band.model)}".</p>`;
+  }
+
+  const openAttr = rows.length > 0 ? " open" : "";
+  return `<details class="band"${openAttr}>
+    <summary>
+      <span class="band-name">${escapeHtml(band.band)}</span>
+      <span class="band-meta">${escapeHtml(label)} · T/R: ${escapeHtml(fmtSpacingsPlain(band.tr_spacings))} · ${rows.length} row${rows.length === 1 ? "" : "s"}</span>
+    </summary>
+    <div class="band-note">${escapeHtml(note)}</div>
+    <div class="table-scroll">${body}</div>
+  </details>`;
+}
+
+function familyRowCount(fam) {
+  return fam.bands.reduce((sum, b) => sum + (b.rows ? b.rows.length : 0), 0);
+}
+
+function renderFamilyPanel(mfg, fam) {
+  const count = familyRowCount(fam);
+  const verified = fam.last_verified ? escapeHtml(fam.last_verified) : "not recorded";
+  return `
+    <div class="family-header">
+      <h2>${escapeHtml(mfg.name)} — ${escapeHtml(fam.name)}</h2>
+      <div class="family-meta">${count} row${count === 1 ? "" : "s"} catalogued · Last verified: ${verified}</div>
+      ${fam.description ? `<p class="family-desc">${escapeHtml(fam.description)}</p>` : ""}
+    </div>
+    ${fam.bands.map(b => renderBandTable(mfg, fam, b, channelPlans[b.band])).join("")}
+  `;
+}
+
+/* ---------------------------------------------------------------- SEARCH */
+
+function parseFreqQuery(q) {
+  if (q.trim() === "") return null;
+  const n = Number(q);
+  return isNaN(n) ? null : n;
+}
+
+function computeSearchResults(query) {
+  const freq = parseFreqQuery(query);
+  const ql = query.trim().toLowerCase();
+  const results = [];
+  CATALOG.manufacturers.forEach(mfg => {
+    mfg.families.forEach(fam => {
+      fam.bands.forEach(band => {
+        (band.rows || []).forEach(row => {
+          let match = false;
+          if (freq !== null) {
+            if (band.model === "fixed_subband") {
+              if (row.tx_min != null && row.tx_max != null && freq >= row.tx_min && freq <= row.tx_max) match = true;
+              if (!match && row.rx_min != null && row.rx_max != null && freq >= row.rx_min && freq <= row.rx_max) match = true;
+            } else if (band.model === "tuning_range" || band.model === "full_band_tunable") {
+              if (row.band_min != null && row.band_max != null && freq >= row.band_min && freq <= row.band_max) match = true;
+            }
+          } else {
+            const hay = [row.part_number, row.pair_part_number, row.subband, mfg.name, fam.name]
+              .filter(Boolean).join(" ").toLowerCase();
+            if (hay.includes(ql)) match = true;
+          }
+          if (match) results.push({ mfg, fam, band, row });
+        });
+      });
+    });
+  });
+  return results;
+}
+
+function renderSearchResults(query, results) {
+  const rowsHtml = results.map(({ mfg, fam, band, row }) => {
+    const isFixed = band.model === "fixed_subband";
+    const rangeLabel = isFixed ? fmtVal(row.subband) : fmtVal(row.band_min != null || row.band_max != null ? `${row.band_min ?? "—"}–${row.band_max ?? "—"}` : null);
+    return `<tr>
+      <td>${escapeHtml(mfg.name)}</td>
+      <td>${escapeHtml(fam.name)}</td>
+      <td>${escapeHtml(band.band)}</td>
+      <td>${escapeHtml(MODEL_INFO[band.model] ? MODEL_INFO[band.model].label : "Unknown")}</td>
+      <td>${rangeLabel}</td>
+      <td>${isFixed ? fmtVal(row.side) : '<span class="muted">—</span>'}</td>
+      <td>${isFixed ? fmtVal(row.tx_min) : fmtVal(row.band_min)}</td>
+      <td>${isFixed ? fmtVal(row.tx_max) : fmtVal(row.band_max)}</td>
+      <td>${isFixed ? fmtVal(row.rx_min) : '<span class="muted">—</span>'}</td>
+      <td>${isFixed ? fmtVal(row.rx_max) : '<span class="muted">—</span>'}</td>
+      <td>${fmtVal(row.part_number)}</td>
+      <td>${fmtSpacings(row.tr_spacings)}</td>
+      <td>${confBadge(row.confidence)}</td>
+      <td>${sourceIcon(row.source_url, row.source_type)}</td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="search-banner">
+      <span>Search results for "<strong>${escapeHtml(query)}</strong>" — ${results.length} match${results.length === 1 ? "" : "es"}</span>
+      <button class="btn" id="clearSearchBtn">Clear search</button>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Manufacturer</th><th>Family</th><th>Band</th><th>Type</th>
+          <th>Sub-band / Range</th><th>Side</th><th>Tx / Min (MHz)</th><th>Tx / Max (MHz)</th>
+          <th>Rx Min (MHz)</th><th>Rx Max (MHz)</th><th>Part Number</th><th>T/R Spacings</th>
+          <th>Confidence</th><th>Source</th>
+        </tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="14" class="empty-note">No matches.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+/* ------------------------------------------------------------------ CSV */
+
+function csvEscape(v) {
+  if (v === null || v === undefined) return "";
+  const s = Array.isArray(v) ? v.join(" / ") : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+const CSV_COLUMNS = [
+  "manufacturer", "family", "band", "model", "subband", "side",
+  "tx_min", "tx_max", "rx_min", "rx_max", "band_min", "band_max", "max_tuning_range",
+  "tr_spacings", "part_number", "pair_part_number", "source_url", "source_type", "confidence", "notes"
+];
+
+function flattenForCsv(mfg, fam, band, row) {
+  return {
+    manufacturer: mfg.name, family: fam.name, band: band.band, model: band.model,
+    subband: row.subband ?? null, side: row.side ?? null,
+    tx_min: row.tx_min ?? null, tx_max: row.tx_max ?? null,
+    rx_min: row.rx_min ?? null, rx_max: row.rx_max ?? null,
+    band_min: row.band_min ?? null, band_max: row.band_max ?? null,
+    max_tuning_range: row.max_tuning_range ?? null,
+    tr_spacings: row.tr_spacings || [], part_number: row.part_number ?? null,
+    pair_part_number: row.pair_part_number ?? null, source_url: row.source_url ?? null,
+    source_type: row.source_type ?? null, confidence: row.confidence ?? null, notes: row.notes || null
+  };
+}
+
+function currentViewRecords() {
+  if (state.query.trim() !== "") {
+    return computeSearchResults(state.query).map(({ mfg, fam, band, row }) => flattenForCsv(mfg, fam, band, row));
+  }
+  const mfg = CATALOG.manufacturers.find(m => m.id === state.mfgId);
+  const fam = mfg.families.find(f => f.id === state.familyId);
+  const out = [];
+  fam.bands.forEach(band => (band.rows || []).forEach(row => out.push(flattenForCsv(mfg, fam, band, row))));
+  return out;
+}
+
+function downloadBlob(filename, mime, content) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportCsv() {
+  const records = currentViewRecords();
+  const lines = [CSV_COLUMNS.join(",")];
+  records.forEach(rec => lines.push(CSV_COLUMNS.map(c => csvEscape(rec[c])).join(",")));
+  downloadBlob("microwave-radio-catalog-view.csv", "text/csv", lines.join("\n"));
+}
+
+function exportJson() {
+  downloadBlob("microwave-radio-catalog.json", "application/json", JSON.stringify(CATALOG, null, 2));
+}
+
+/* --------------------------------------------------------------- STATE */
+
+const state = { mfgId: "aviat", familyId: "wtm-4200", query: "" };
+
+function renderMfgTabs() {
+  const el = document.getElementById("mfgTabs");
+  el.innerHTML = CATALOG.manufacturers.map(m =>
+    `<button class="tab-btn${m.id === state.mfgId ? " active" : ""}" data-mfg="${m.id}">${escapeHtml(m.name)}</button>`
+  ).join("");
+}
+
+function renderFamilyTabs() {
+  const el = document.getElementById("familyTabs");
+  const mfg = CATALOG.manufacturers.find(m => m.id === state.mfgId);
+  const groups = [];
+  const seen = new Map();
+  mfg.families.forEach(f => {
+    const key = f.group || "__none__";
+    if (!seen.has(key)) { seen.set(key, []); groups.push(key); }
+    seen.get(key).push(f);
+  });
+  el.innerHTML = groups.map(key => {
+    const fams = seen.get(key);
+    const label = key === "__none__" ? "" : `<span class="family-group-label">${escapeHtml(key)}</span>`;
+    const btns = fams.map(f =>
+      `<button class="tab-btn${f.id === state.familyId ? " active" : ""}" data-fam="${f.id}">${escapeHtml(f.name)}</button>`
+    ).join("");
+    return `<span class="family-group">${label}${btns}</span>`;
+  }).join("");
+}
+
+function renderMain() {
+  const main = document.getElementById("main");
+  if (state.query.trim() !== "") {
+    main.innerHTML = renderSearchResults(state.query, computeSearchResults(state.query));
+    const clearBtn = document.getElementById("clearSearchBtn");
+    if (clearBtn) clearBtn.addEventListener("click", () => {
+      state.query = "";
+      document.getElementById("search").value = "";
+      render();
+    });
+    return;
+  }
+  const mfg = CATALOG.manufacturers.find(m => m.id === state.mfgId);
+  const fam = mfg.families.find(f => f.id === state.familyId);
+  main.innerHTML = renderFamilyPanel(mfg, fam);
+}
+
+function render() {
+  renderMfgTabs();
+  renderFamilyTabs();
+  renderMain();
+}
+
+document.getElementById("mfgTabs").addEventListener("click", e => {
+  const btn = e.target.closest("[data-mfg]");
+  if (!btn) return;
+  state.mfgId = btn.dataset.mfg;
+  state.familyId = CATALOG.manufacturers.find(m => m.id === state.mfgId).families[0].id;
+  state.query = "";
+  document.getElementById("search").value = "";
+  render();
+});
+
+document.getElementById("familyTabs").addEventListener("click", e => {
+  const btn = e.target.closest("[data-fam]");
+  if (!btn) return;
+  state.familyId = btn.dataset.fam;
+  state.query = "";
+  document.getElementById("search").value = "";
+  render();
+});
+
+document.getElementById("search").addEventListener("input", e => {
+  state.query = e.target.value;
+  renderMain();
+});
+
+document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+document.getElementById("exportJsonBtn").addEventListener("click", exportJson);
+
+render();
+</script>
+</body>
+</html>
