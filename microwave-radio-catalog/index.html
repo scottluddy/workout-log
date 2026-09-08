@@ -108,6 +108,20 @@
     margin-bottom: 10px; font-size: 13px; color: var(--muted);
   }
   .search-banner strong { color: var(--text); }
+  .freqmap { padding: 10px 14px 4px 14px; border-top: 1px solid var(--border); }
+  .freqmap-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .freqmap-title { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; }
+  .freqmap-plans { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: auto; }
+  .freqmap-plans-label { font-size: 11px; color: var(--muted); margin-right: 2px; }
+  .chip {
+    padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--bg); color: var(--text); font-size: 11px; cursor: pointer;
+  }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .freqmap-svg { width: 100%; height: auto; display: block; }
+  .freqmap-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 0 8px 0; font-size: 10.5px; color: var(--muted); }
+  .freqmap-legend span.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .chan-tick-flag { stroke: var(--unconfirmed-fg) !important; stroke-width: 2 !important; }
   footer.foot { padding: 20px 16px 40px; text-align: center; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -228,7 +242,8 @@ const CATALOG = {
           description: "",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "7 GHz", model: "fixed_subband", tr_spacings: [161], rows: [
               { type: "fixed_subband", subband: "07", side: "high", tx_min: 7428, tx_max: 7516, rx_min: null, rx_max: null,
                 tr_spacings: [161], part_number: "W42-7H07-DPX", pair_part_number: null,
@@ -268,7 +283,8 @@ const CATALOG = {
           description: "Scaffolded — no rows catalogued yet.",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
@@ -281,7 +297,8 @@ const CATALOG = {
           description: "Scaffolded — no rows catalogued yet.",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
@@ -294,9 +311,11 @@ const CATALOG = {
           description: "",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "tuning_range", tr_spacings: [252.04, 340], rows: [
+            { band: "6 GHz (Lower)", model: "tuning_range", tr_spacings: [252.04, 340], rows: [
               { type: "tuning_range", band_min: 5925, band_max: 6425, max_tuning_range: 56,
-                tr_spacings: [252.04, 340], source_url: null, source_type: null, confidence: "verified", notes: "L6" },
+                tr_spacings: [252.04, 340], source_url: null, source_type: null, confidence: "verified", notes: "L6" }
+            ] },
+            { band: "6.7 GHz (Upper)", model: "tuning_range", tr_spacings: [252.04, 340], rows: [
               { type: "tuning_range", band_min: 6425, band_max: 7110, max_tuning_range: 56,
                 tr_spacings: [252.04, 340], source_url: null, source_type: null, confidence: "verified", notes: "U6" }
             ] },
@@ -321,7 +340,8 @@ const CATALOG = {
           description: "Modeled as a separate family from ODU 600, not an edit to it — the two differ in supported T/R spacings and max tuning range.",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "tuning_range", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "tuning_range", tr_spacings: [490, 500, 520, 530], rows: [
               { type: "tuning_range", band_min: null, band_max: null, max_tuning_range: 305,
                 tr_spacings: [490, 500, 520, 530], source_url: null, source_type: null, confidence: "verified",
@@ -338,7 +358,8 @@ const CATALOG = {
           description: "Scaffolded — no rows catalogued yet.",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "tuning_range", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "tuning_range", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
             { band: "18 GHz", model: "tuning_range", tr_spacings: [], rows: [] },
             { band: "23 GHz", model: "tuning_range", tr_spacings: [], rows: [] }
@@ -358,7 +379,8 @@ const CATALOG = {
           description: "Cambium PTP 820/850 is rebadged Ceragon IP-20 — these rows also describe the equivalent Ceragon RFUs. Rows below are specifically from the PTP 820C variant.",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [500], rows: [
               { type: "fixed_subband", subband: "Ch1W6", side: "low", tx_min: 10695, tx_max: 10955, rx_min: null, rx_max: null,
                 tr_spacings: [500], part_number: "C110082B030A", pair_part_number: null,
@@ -391,7 +413,8 @@ const CATALOG = {
           description: "Cambium PTP 820/850 is rebadged Ceragon IP-20 — these rows also describe the equivalent Ceragon RFUs. Scaffolded — no rows catalogued yet.",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "18 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
@@ -411,7 +434,8 @@ const CATALOG = {
           description: "",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [
               { type: "fixed_subband", subband: "3", side: null, tx_min: 11035, tx_max: 11215, rx_min: 11525, rx_max: 11705,
                 tr_spacings: [], part_number: "AP11-EO-LNK-B3", pair_part_number: null,
@@ -429,12 +453,39 @@ const CATALOG = {
           description: "",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [252.04], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 5900, tx_max: 5990, rx_min: 6152, rx_max: 6242,
+                tr_spacings: [252.04], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources, not a fetched vendor datasheet. Tx_min (5900 MHz) falls below the 5925 MHz FCC lower-6 GHz band edge used elsewhere in this catalog — verify before relying on it for FCC-licensed deployments." },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 5959, tx_max: 6049, rx_min: 6211, rx_max: 6301,
+                tr_spacings: [252.04], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources. One cited listing for this exact range labels it \"Sub-Band 1\" rather than \"2\" — the sub-band number is unresolved even though the frequency range itself recurs across sources." },
+              { type: "fixed_subband", subband: "4", side: null, tx_min: 6078, tx_max: 6168, rx_min: 6330, rx_max: 6420,
+                tr_spacings: [252.04], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources, not a fetched vendor datasheet. Source numbering skips \"3\"." }
+            ] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [340], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 6440, tx_max: 6560, rx_min: 6780, rx_max: 6900,
+                tr_spacings: [340], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources. 340 MHz T/R spacing matches an ETSI-style upper-6 GHz plan rather than the ~170 MHz spacing in this catalog's FCC 101.147(k) extract — applicable region unconfirmed. A third sub-band was also cited but its numbers were internally inconsistent and were left out." },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 6560, tx_max: 6680, rx_min: 6900, rx_max: 7020,
+                tr_spacings: [340], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources; same T/R-spacing caveat as sub-band 1 above." }
+            ] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [
               { type: "fixed_subband", subband: "1", side: null, tx_min: 10715, tx_max: 10895, rx_min: 11205, rx_max: 11385,
                 tr_spacings: [], part_number: "AP2-11-X-LNK-B1", pair_part_number: null,
                 source_url: null, source_type: null, confidence: "verified",
                 notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 10875, tx_max: 11055, rx_min: 11365, rx_max: 11545,
+                tr_spacings: [], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "Frequency range from secondary/aggregated web sources, not a fetched vendor datasheet; no part number for the non-XG variant was found to confirm it." },
               { type: "fixed_subband", subband: "3", side: null, tx_min: 11035, tx_max: 11215, rx_min: 11525, rx_max: 11705,
                 tr_spacings: [], part_number: "AP2-11-O-LNK-B3", pair_part_number: null,
                 source_url: null, source_type: null, confidence: "verified",
@@ -446,7 +497,20 @@ const CATALOG = {
                 source_url: null, source_type: null, confidence: "verified",
                 notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" }
             ] },
-            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [1200], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 21200, tx_max: 21605.5, rx_min: 22400, rx_max: 22805.5,
+                tr_spacings: [1200], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources, not a fetched vendor datasheet. 1200 MHz T/R spacing matches this catalog's FCC 101.147(s) extract." },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 21600, tx_max: 22000, rx_min: 22800, rx_max: 23200,
+                tr_spacings: [1200], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources. This exact range recurred as \"sub-band 2\" across two independently pasted citations, which is more corroboration than the other rows in this band have." },
+              { type: "fixed_subband", subband: "3", side: null, tx_min: 21997.5, tx_max: 22400, rx_min: 23197.5, rx_max: 23600,
+                tr_spacings: [1200], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources, not a fetched vendor datasheet." }
+            ] }
           ]
         },
         {
@@ -456,12 +520,39 @@ const CATALOG = {
           description: "",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [252.04], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 5900, tx_max: 5990, rx_min: 6152, rx_max: 6242,
+                tr_spacings: [252.04], part_number: "AP2XG-6L-O-LNK-B1", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "Part number and range from secondary/aggregated web sources, not a fetched vendor datasheet. Tx_min (5900 MHz) falls below the 5925 MHz FCC lower-6 GHz band edge used elsewhere in this catalog — verify before relying on it for FCC-licensed deployments." },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 5959, tx_max: 6049, rx_min: 6211, rx_max: 6301,
+                tr_spacings: [252.04], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources. One cited listing for this exact range labels it \"Sub-Band 1\" rather than \"2\" — the sub-band number is unresolved even though the frequency range itself recurs across sources." },
+              { type: "fixed_subband", subband: "4", side: null, tx_min: 6078, tx_max: 6168, rx_min: 6330, rx_max: 6420,
+                tr_spacings: [252.04], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources, not a fetched vendor datasheet. Source numbering skips \"3\"." }
+            ] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [340], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 6440, tx_max: 6560, rx_min: 6780, rx_max: 6900,
+                tr_spacings: [340], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources. 340 MHz T/R spacing matches an ETSI-style upper-6 GHz plan rather than the ~170 MHz spacing in this catalog's FCC 101.147(k) extract — applicable region unconfirmed. A third sub-band was also cited but its numbers were internally inconsistent and were left out." },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 6560, tx_max: 6680, rx_min: 6900, rx_max: 7020,
+                tr_spacings: [340], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources; same T/R-spacing caveat as sub-band 1 above." }
+            ] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [], rows: [
               { type: "fixed_subband", subband: "1", side: null, tx_min: 10715, tx_max: 10895, rx_min: 11205, rx_max: 11385,
                 tr_spacings: [], part_number: "AP2-11-X-LNK-B1", pair_part_number: null,
                 source_url: null, source_type: null, confidence: "verified",
                 notes: "Same part serves ALFOplus2 and ALFOplus2XG at 11 GHz; vendor does not use a low/high side label" },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 10875, tx_max: 11055, rx_min: 11365, rx_max: 11545,
+                tr_spacings: [], part_number: "AP2XG-11-O-LNK-B2", pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "Part number and range from secondary/aggregated web sources, not a fetched vendor datasheet." },
               { type: "fixed_subband", subband: "3", side: null, tx_min: 11035, tx_max: 11215, rx_min: 11525, rx_max: 11705,
                 tr_spacings: [], part_number: "AP2-11-O-LNK-B3", pair_part_number: null,
                 source_url: null, source_type: null, confidence: "verified",
@@ -473,7 +564,20 @@ const CATALOG = {
                 source_url: null, source_type: null, confidence: "verified",
                 notes: "Vendor publishes Tx and Rx directly per sub-band; source does not use a low/high side label" }
             ] },
-            { band: "23 GHz", model: "fixed_subband", tr_spacings: [], rows: [] }
+            { band: "23 GHz", model: "fixed_subband", tr_spacings: [1200], rows: [
+              { type: "fixed_subband", subband: "1", side: null, tx_min: 21200, tx_max: 21605.5, rx_min: 22400, rx_max: 22805.5,
+                tr_spacings: [1200], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources, not a fetched vendor datasheet. 1200 MHz T/R spacing matches this catalog's FCC 101.147(s) extract." },
+              { type: "fixed_subband", subband: "2", side: null, tx_min: 21600, tx_max: 22000, rx_min: 22800, rx_max: 23200,
+                tr_spacings: [1200], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources. This exact range recurred as \"sub-band 2\" across two independently pasted citations, which is more corroboration than the other rows in this band have." },
+              { type: "fixed_subband", subband: "3", side: null, tx_min: 21997.5, tx_max: 22400, rx_min: 23197.5, rx_max: 23600,
+                tr_spacings: [1200], part_number: null, pair_part_number: null,
+                source_url: null, source_type: null, confidence: "unconfirmed",
+                notes: "From secondary/aggregated web sources, not a fetched vendor datasheet." }
+            ] }
           ]
         }
       ]
@@ -490,7 +594,8 @@ const CATALOG = {
           description: "",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: "fixed_subband", tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: "fixed_subband", tr_spacings: [], rows: [] },
             { band: "11 GHz", model: "fixed_subband", tr_spacings: [490], rows: [
               { type: "fixed_subband", subband: "B", side: "high", tx_min: null, tx_max: null, rx_min: null, rx_max: null,
                 tr_spacings: [490], part_number: "I11HOT05HB", pair_part_number: null,
@@ -505,10 +610,11 @@ const CATALOG = {
           id: "integra",
           group: null,
           name: "Integra",
-          description: "Scaffolded — record type not yet confirmed, no rows catalogued.",
+          description: "Scaffolded — record type not yet confirmed, no rows catalogued. Generic architecture descriptions exist in secondary sources but none named specific Integra part numbers or gave figures precise enough to catalogue here — see chat for what was checked and rejected.",
           last_verified: null,
           bands: [
-            { band: "6 GHz", model: null, tr_spacings: [], rows: [] },
+            { band: "6 GHz (Lower)", model: null, tr_spacings: [], rows: [] },
+            { band: "6.7 GHz (Upper)", model: null, tr_spacings: [], rows: [] },
             { band: "11 GHz", model: null, tr_spacings: [], rows: [] },
             { band: "18 GHz", model: null, tr_spacings: [], rows: [] },
             { band: "23 GHz", model: null, tr_spacings: [], rows: [] }
@@ -520,16 +626,46 @@ const CATALOG = {
 };
 
 /* ----------------------------------------------------------------------
-   FUTURE HOOK — FCC Part 101.147 channel plan overlay.
-   Not implemented. When it's built, channelPlans will be keyed by band
-   label (e.g. "11 GHz") holding that band's authorized channel plan, and
-   renderBandTable(mfg, fam, band, channelPlan) already accepts an optional
-   overlay argument so a channel column can be layered onto a band's table
-   without changing how fixed_subband/tuning_range rows render.
+   FCC PART 101.147 CHANNEL PLANS — the overlay the seam above was left for.
+   Keyed by "bandMinMHz-bandMaxMHz" (the CFR band segment, not this
+   catalog's band label — matching is done by frequency overlap in
+   findChannelPlanBands() below, so a catalog band spanning two CFR
+   segments picks up both automatically). Each entry:
+     {
+       paragraph,                 // top-level CFR paragraph, e.g. "(o)"
+       authorized_bandwidth_mhz,  // as stated in the CFR, or null
+       plans: [
+         {
+           cfr_paragraph,         // exact subparagraph, e.g. "(o)(5)"
+           channel_bandwidth,     // display label, e.g. "10 MHz"
+           rows: [ { tx_mhz, rx_mhz, note? } ]   // rx_mhz is null for
+                                                  // one-way/unpaired channels;
+                                                  // `note` means the source
+                                                  // itself printed something
+                                                  // irregular for that row
+                                                  // (reproduced as printed,
+                                                  // not smoothed over)
+         }
+       ]
+     }
+   Extracted programmatically from 47 CFR 101.147 (up to date as of
+   9/04/2026) and limited to channel bandwidths of 10 MHz and up, per a
+   standing request — narrower plans (kHz/low-MHz channels) were not
+   extracted and are not represented here.
    ---------------------------------------------------------------------- */
-const channelPlans = {
-  // "11 GHz": { standard: "FCC Part 101.147(m)", channels: [ ... ] }
-};
+const CHANNEL_PLANS = {"5925-6425":{"paragraph":"(i)","authorized_bandwidth_mhz":60,"plans":[{"cfr_paragraph":"(i)(7)","channel_bandwidth":"10 MHz","rows":[{"tx_mhz":5935.32,"rx_mhz":6187.36},{"tx_mhz":5945.2,"rx_mhz":6197.24},{"tx_mhz":5955.08,"rx_mhz":6207.12},{"tx_mhz":5964.97,"rx_mhz":6217.01},{"tx_mhz":5974.85,"rx_mhz":6226.89},{"tx_mhz":5984.73,"rx_mhz":6236.77},{"tx_mhz":5994.62,"rx_mhz":6246.66},{"tx_mhz":6004.5,"rx_mhz":6256.54},{"tx_mhz":6014.38,"rx_mhz":6266.42},{"tx_mhz":6024.27,"rx_mhz":6276.31},{"tx_mhz":6034.15,"rx_mhz":6286.19},{"tx_mhz":6044.03,"rx_mhz":6296.07},{"tx_mhz":6053.92,"rx_mhz":6305.96},{"tx_mhz":6063.8,"rx_mhz":6315.84},{"tx_mhz":6073.68,"rx_mhz":6325.72},{"tx_mhz":6083.57,"rx_mhz":6335.61},{"tx_mhz":6093.45,"rx_mhz":6345.49},{"tx_mhz":6103.33,"rx_mhz":6355.37},{"tx_mhz":6113.22,"rx_mhz":6365.26},{"tx_mhz":6123.1,"rx_mhz":6375.14},{"tx_mhz":6132.98,"rx_mhz":6385.02},{"tx_mhz":6142.87,"rx_mhz":6394.91},{"tx_mhz":6152.75,"rx_mhz":6404.79},{"tx_mhz":6162.63,"rx_mhz":6414.67}]},{"cfr_paragraph":"(i)(8)","channel_bandwidth":"30 MHz","rows":[{"tx_mhz":5945.2,"rx_mhz":6197.24},{"tx_mhz":5974.85,"rx_mhz":6226.89},{"tx_mhz":6004.5,"rx_mhz":6256.54},{"tx_mhz":6034.15,"rx_mhz":6286.19},{"tx_mhz":6063.8,"rx_mhz":6315.84},{"tx_mhz":6093.45,"rx_mhz":6345.49},{"tx_mhz":6123.1,"rx_mhz":6375.14},{"tx_mhz":6152.75,"rx_mhz":6404.79}]},{"cfr_paragraph":"(i)(9)","channel_bandwidth":"60 MHz","rows":[{"tx_mhz":5960.025,"rx_mhz":6212.065},{"tx_mhz":6019.325,"rx_mhz":6271.365},{"tx_mhz":6078.625,"rx_mhz":6330.665},{"tx_mhz":6137.925,"rx_mhz":6389.965}]}]},"6525-6875":{"paragraph":"(k)","authorized_bandwidth_mhz":10,"plans":[{"cfr_paragraph":"(k)(7)","channel_bandwidth":"10 MHz","rows":[{"tx_mhz":6545.0,"rx_mhz":6715.0,"note":"T/R spacing for this row (170.0 MHz) differs from the table's dominant spacing (160.0 MHz) in the source; reproduced as printed."},{"tx_mhz":6555.0,"rx_mhz":6725.0,"note":"T/R spacing for this row (170.0 MHz) differs from the table's dominant spacing (160.0 MHz) in the source; reproduced as printed."},{"tx_mhz":6565.0,"rx_mhz":6735.0,"note":"T/R spacing for this row (170.0 MHz) differs from the table's dominant spacing (160.0 MHz) in the source; reproduced as printed."},{"tx_mhz":6585.0,"rx_mhz":6745.0},{"tx_mhz":6595.0,"rx_mhz":6755.0},{"tx_mhz":6605.0,"rx_mhz":6765.0},{"tx_mhz":6615.0,"rx_mhz":6775.0},{"tx_mhz":6625.0,"rx_mhz":6785.0},{"tx_mhz":6635.0,"rx_mhz":6795.0},{"tx_mhz":6645.0,"rx_mhz":6805.0},{"tx_mhz":6655.0,"rx_mhz":6815.0},{"tx_mhz":6665.0,"rx_mhz":6825.0},{"tx_mhz":6675.0,"rx_mhz":6835.0},{"tx_mhz":6685.0,"rx_mhz":6845.0},{"tx_mhz":6695.0,"rx_mhz":6855.0},{"tx_mhz":6705.0,"rx_mhz":6865.0},{"tx_mhz":6535.0,"rx_mhz":6575.0,"note":"T/R spacing for this row (40.0 MHz) differs from the table's dominant spacing (160.0 MHz) in the source; reproduced as printed."}]},{"cfr_paragraph":"(k)(8)","channel_bandwidth":"30 MHz","rows":[{"tx_mhz":6555.0,"rx_mhz":6725.0,"note":"T/R spacing for this row (170.0 MHz) differs from the table's dominant spacing (160.0 MHz) in the source; reproduced as printed."},{"tx_mhz":6595.0,"rx_mhz":6755.0},{"tx_mhz":6625.0,"rx_mhz":6785.0},{"tx_mhz":6655.0,"rx_mhz":6815.0},{"tx_mhz":6685.0,"rx_mhz":6845.0}]}]},"10700-11700":{"paragraph":"(o)","authorized_bandwidth_mhz":80,"plans":[{"cfr_paragraph":"(o)(5)","channel_bandwidth":"10 MHz","rows":[{"tx_mhz":10705.0,"rx_mhz":11205.0,"note":"T/R spacing for this row (500.0 MHz) differs from the table's dominant spacing (490.0 MHz) in the source; reproduced as printed."},{"tx_mhz":10715.0,"rx_mhz":11215.0,"note":"T/R spacing for this row (500.0 MHz) differs from the table's dominant spacing (490.0 MHz) in the source; reproduced as printed."},{"tx_mhz":10725.0,"rx_mhz":11675.0,"note":"Source row prints '10725 [superscript 2] [superscript 1] 11675' \u2014 footnote 2 (unpaired-use eligible) attaches to 10725, footnote 1 (alternate/narrow-bandwidth) attaches to 11675. This does not fit the table's 490 MHz Tx\u2192Rx pattern, and the two footnotes suggest 10725 and 11675 may be two independently-eligible unpaired frequencies printed on one row rather than a matched Tx/Rx pair. Reproduced as printed; verify against the primary source before treating 11675 as this row's paired Rx."},{"tx_mhz":10735.0,"rx_mhz":11225.0},{"tx_mhz":10745.0,"rx_mhz":11235.0},{"tx_mhz":10755.0,"rx_mhz":11245.0},{"tx_mhz":10765.0,"rx_mhz":11255.0},{"tx_mhz":10775.0,"rx_mhz":11265.0},{"tx_mhz":10785.0,"rx_mhz":11275.0},{"tx_mhz":10795.0,"rx_mhz":11285.0},{"tx_mhz":10805.0,"rx_mhz":11295.0},{"tx_mhz":10815.0,"rx_mhz":11305.0},{"tx_mhz":10825.0,"rx_mhz":11315.0},{"tx_mhz":10835.0,"rx_mhz":11325.0},{"tx_mhz":10845.0,"rx_mhz":11335.0},{"tx_mhz":10855.0,"rx_mhz":11345.0},{"tx_mhz":10865.0,"rx_mhz":11355.0},{"tx_mhz":10875.0,"rx_mhz":11365.0},{"tx_mhz":10885.0,"rx_mhz":11375.0},{"tx_mhz":10895.0,"rx_mhz":11385.0},{"tx_mhz":10905.0,"rx_mhz":11395.0},{"tx_mhz":10915.0,"rx_mhz":11405.0},{"tx_mhz":10925.0,"rx_mhz":11415.0},{"tx_mhz":10935.0,"rx_mhz":11425.0},{"tx_mhz":10945.0,"rx_mhz":11435.0},{"tx_mhz":10955.0,"rx_mhz":11445.0},{"tx_mhz":10965.0,"rx_mhz":11455.0},{"tx_mhz":10975.0,"rx_mhz":11465.0},{"tx_mhz":10985.0,"rx_mhz":11475.0},{"tx_mhz":10995.0,"rx_mhz":11485.0},{"tx_mhz":11005.0,"rx_mhz":11495.0},{"tx_mhz":11015.0,"rx_mhz":11505.0},{"tx_mhz":11025.0,"rx_mhz":11515.0},{"tx_mhz":11035.0,"rx_mhz":11525.0},{"tx_mhz":11045.0,"rx_mhz":11535.0},{"tx_mhz":11055.0,"rx_mhz":11545.0},{"tx_mhz":11065.0,"rx_mhz":11555.0},{"tx_mhz":11075.0,"rx_mhz":11565.0},{"tx_mhz":11085.0,"rx_mhz":11575.0},{"tx_mhz":11095.0,"rx_mhz":11585.0},{"tx_mhz":11105.0,"rx_mhz":11595.0},{"tx_mhz":11115.0,"rx_mhz":11605.0},{"tx_mhz":11125.0,"rx_mhz":11615.0},{"tx_mhz":11135.0,"rx_mhz":11625.0},{"tx_mhz":11145.0,"rx_mhz":11635.0},{"tx_mhz":11155.0,"rx_mhz":11645.0},{"tx_mhz":11165.0,"rx_mhz":11655.0},{"tx_mhz":11175.0,"rx_mhz":11665.0},{"tx_mhz":11185.0,"rx_mhz":11685.0,"note":"T/R spacing for this row (500.0 MHz) differs from the table's dominant spacing (490.0 MHz) in the source; reproduced as printed."},{"tx_mhz":11195.0,"rx_mhz":11695.0,"note":"T/R spacing for this row (500.0 MHz) differs from the table's dominant spacing (490.0 MHz) in the source; reproduced as printed."}]},{"cfr_paragraph":"(o)(6)","channel_bandwidth":"30 MHz","rows":[{"tx_mhz":10715.0,"rx_mhz":11215.0,"note":"T/R spacing for this row (500.0 MHz) differs from the table's dominant spacing (490.0 MHz) in the source; reproduced as printed."},{"tx_mhz":10755.0,"rx_mhz":11245.0},{"tx_mhz":10795.0,"rx_mhz":11285.0},{"tx_mhz":10835.0,"rx_mhz":11325.0},{"tx_mhz":10875.0,"rx_mhz":11365.0},{"tx_mhz":10915.0,"rx_mhz":11405.0},{"tx_mhz":10955.0,"rx_mhz":11445.0},{"tx_mhz":10995.0,"rx_mhz":11485.0},{"tx_mhz":11035.0,"rx_mhz":11525.0},{"tx_mhz":11075.0,"rx_mhz":11565.0},{"tx_mhz":11115.0,"rx_mhz":11605.0},{"tx_mhz":11155.0,"rx_mhz":11645.0}]},{"cfr_paragraph":"(o)(7)","channel_bandwidth":"40 MHz","rows":[{"tx_mhz":10735.0,"rx_mhz":11225.0},{"tx_mhz":10775.0,"rx_mhz":11265.0},{"tx_mhz":10815.0,"rx_mhz":11305.0},{"tx_mhz":10855.0,"rx_mhz":11345.0},{"tx_mhz":10895.0,"rx_mhz":11385.0},{"tx_mhz":10935.0,"rx_mhz":11425.0},{"tx_mhz":10975.0,"rx_mhz":11465.0},{"tx_mhz":11015.0,"rx_mhz":11505.0},{"tx_mhz":11055.0,"rx_mhz":11545.0},{"tx_mhz":11095.0,"rx_mhz":11585.0},{"tx_mhz":11135.0,"rx_mhz":11625.0},{"tx_mhz":11175.0,"rx_mhz":11665.0}]},{"cfr_paragraph":"(o)(8)","channel_bandwidth":"80 MHz","rows":[{"tx_mhz":10755.0,"rx_mhz":11245.0},{"tx_mhz":10835.0,"rx_mhz":11325.0},{"tx_mhz":10915.0,"rx_mhz":11405.0},{"tx_mhz":10995.0,"rx_mhz":11485.0},{"tx_mhz":11075.0,"rx_mhz":11565.0},{"tx_mhz":11155.0,"rx_mhz":11645.0}]}]},"17700-19700":{"paragraph":"(r)","authorized_bandwidth_mhz":null,"plans":[{"cfr_paragraph":"(r)(7)","channel_bandwidth":"10 MHz","rows":[{"tx_mhz":17705.0,"rx_mhz":null},{"tx_mhz":17715.0,"rx_mhz":null},{"tx_mhz":17725.0,"rx_mhz":null},{"tx_mhz":17735.0,"rx_mhz":null},{"tx_mhz":17745.0,"rx_mhz":19305.0},{"tx_mhz":17755.0,"rx_mhz":19315.0},{"tx_mhz":17765.0,"rx_mhz":19325.0},{"tx_mhz":17775.0,"rx_mhz":19335.0},{"tx_mhz":17785.0,"rx_mhz":19345.0},{"tx_mhz":17795.0,"rx_mhz":19355.0},{"tx_mhz":17805.0,"rx_mhz":19365.0},{"tx_mhz":17815.0,"rx_mhz":19375.0},{"tx_mhz":17825.0,"rx_mhz":19385.0},{"tx_mhz":17835.0,"rx_mhz":19395.0},{"tx_mhz":17845.0,"rx_mhz":19405.0},{"tx_mhz":17855.0,"rx_mhz":19415.0},{"tx_mhz":17865.0,"rx_mhz":19425.0},{"tx_mhz":17875.0,"rx_mhz":19435.0},{"tx_mhz":17885.0,"rx_mhz":19445.0},{"tx_mhz":17895.0,"rx_mhz":19455.0},{"tx_mhz":17905.0,"rx_mhz":19465.0},{"tx_mhz":17915.0,"rx_mhz":19475.0},{"tx_mhz":17925.0,"rx_mhz":19485.0},{"tx_mhz":17935.0,"rx_mhz":19495.0},{"tx_mhz":17945.0,"rx_mhz":19505.0},{"tx_mhz":17955.0,"rx_mhz":19515.0},{"tx_mhz":17965.0,"rx_mhz":19525.0},{"tx_mhz":17975.0,"rx_mhz":19535.0},{"tx_mhz":17985.0,"rx_mhz":19545.0},{"tx_mhz":17995.0,"rx_mhz":19555.0},{"tx_mhz":18005.0,"rx_mhz":19565.0},{"tx_mhz":18015.0,"rx_mhz":19575.0},{"tx_mhz":18025.0,"rx_mhz":19585.0},{"tx_mhz":18035.0,"rx_mhz":19595.0},{"tx_mhz":18045.0,"rx_mhz":19605.0},{"tx_mhz":18055.0,"rx_mhz":19615.0},{"tx_mhz":18065.0,"rx_mhz":19625.0},{"tx_mhz":18075.0,"rx_mhz":19635.0},{"tx_mhz":18085.0,"rx_mhz":19645.0},{"tx_mhz":18095.0,"rx_mhz":19655.0},{"tx_mhz":18105.0,"rx_mhz":19665.0},{"tx_mhz":18115.0,"rx_mhz":19675.0},{"tx_mhz":18125.0,"rx_mhz":19685.0},{"tx_mhz":18135.0,"rx_mhz":19695.0}]},{"cfr_paragraph":"(r)(8)","channel_bandwidth":"20 MHz","rows":[{"tx_mhz":17710.0,"rx_mhz":null},{"tx_mhz":17730.0,"rx_mhz":null},{"tx_mhz":17750.0,"rx_mhz":19310.0},{"tx_mhz":17770.0,"rx_mhz":19330.0},{"tx_mhz":17790.0,"rx_mhz":19350.0},{"tx_mhz":17810.0,"rx_mhz":19370.0},{"tx_mhz":17830.0,"rx_mhz":19390.0},{"tx_mhz":17850.0,"rx_mhz":19410.0},{"tx_mhz":17870.0,"rx_mhz":19430.0},{"tx_mhz":17890.0,"rx_mhz":19450.0},{"tx_mhz":17910.0,"rx_mhz":19470.0},{"tx_mhz":17930.0,"rx_mhz":19490.0},{"tx_mhz":17950.0,"rx_mhz":19510.0},{"tx_mhz":17970.0,"rx_mhz":19530.0},{"tx_mhz":17990.0,"rx_mhz":19550.0},{"tx_mhz":18010.0,"rx_mhz":19570.0},{"tx_mhz":18030.0,"rx_mhz":19590.0},{"tx_mhz":18050.0,"rx_mhz":19610.0},{"tx_mhz":18070.0,"rx_mhz":19630.0},{"tx_mhz":18090.0,"rx_mhz":19650.0},{"tx_mhz":18110.0,"rx_mhz":19670.0},{"tx_mhz":18130.0,"rx_mhz":19690.0}]},{"cfr_paragraph":"(r)(9)","channel_bandwidth":"30 MHz","rows":[{"tx_mhz":17715.0,"rx_mhz":null},{"tx_mhz":17755.0,"rx_mhz":19315.0},{"tx_mhz":17785.0,"rx_mhz":19345.0},{"tx_mhz":17815.0,"rx_mhz":19375.0},{"tx_mhz":17845.0,"rx_mhz":19405.0},{"tx_mhz":17875.0,"rx_mhz":19435.0},{"tx_mhz":17905.0,"rx_mhz":19465.0},{"tx_mhz":17935.0,"rx_mhz":19495.0},{"tx_mhz":17965.0,"rx_mhz":19525.0},{"tx_mhz":17995.0,"rx_mhz":19555.0},{"tx_mhz":18025.0,"rx_mhz":19585.0},{"tx_mhz":18055.0,"rx_mhz":19615.0},{"tx_mhz":18085.0,"rx_mhz":19645.0},{"tx_mhz":18115.0,"rx_mhz":19675.0}]},{"cfr_paragraph":"(r)(10)","channel_bandwidth":"40 MHz","rows":[{"tx_mhz":17720.0,"rx_mhz":null},{"tx_mhz":17760.0,"rx_mhz":19320.0},{"tx_mhz":17800.0,"rx_mhz":19360.0},{"tx_mhz":17840.0,"rx_mhz":19400.0},{"tx_mhz":17880.0,"rx_mhz":19440.0},{"tx_mhz":17920.0,"rx_mhz":19480.0},{"tx_mhz":17960.0,"rx_mhz":19520.0},{"tx_mhz":18000.0,"rx_mhz":19560.0},{"tx_mhz":18040.0,"rx_mhz":19600.0},{"tx_mhz":18080.0,"rx_mhz":19640.0},{"tx_mhz":18120.0,"rx_mhz":19680.0}]},{"cfr_paragraph":"(r)(11)","channel_bandwidth":"50 MHz","rows":[{"tx_mhz":17765.0,"rx_mhz":19325.0},{"tx_mhz":17815.0,"rx_mhz":19375.0},{"tx_mhz":17865.0,"rx_mhz":19425.0},{"tx_mhz":17915.0,"rx_mhz":19475.0},{"tx_mhz":17965.0,"rx_mhz":19525.0},{"tx_mhz":18015.0,"rx_mhz":19575.0},{"tx_mhz":18065.0,"rx_mhz":19625.0},{"tx_mhz":18115.0,"rx_mhz":19675.0}]},{"cfr_paragraph":"(r)(12)","channel_bandwidth":"80 MHz","rows":[{"tx_mhz":17740.0,"rx_mhz":null},{"tx_mhz":17820.0,"rx_mhz":19380.0},{"tx_mhz":17900.0,"rx_mhz":19460.0},{"tx_mhz":17980.0,"rx_mhz":19540.0},{"tx_mhz":18060.0,"rx_mhz":19620.0}]}]},"21200-23600":{"paragraph":"(s)","authorized_bandwidth_mhz":50,"plans":[{"cfr_paragraph":"(s)(3)","channel_bandwidth":"10 MHz","rows":[{"tx_mhz":21602.5,"rx_mhz":22802.5},{"tx_mhz":21607.5,"rx_mhz":22807.5},{"tx_mhz":21612.5,"rx_mhz":22812.5},{"tx_mhz":21617.5,"rx_mhz":22817.5},{"tx_mhz":21622.5,"rx_mhz":22822.5},{"tx_mhz":21627.5,"rx_mhz":22827.5},{"tx_mhz":21632.5,"rx_mhz":22832.5},{"tx_mhz":21637.5,"rx_mhz":22837.5},{"tx_mhz":21642.5,"rx_mhz":22842.5},{"tx_mhz":21647.5,"rx_mhz":22847.5},{"tx_mhz":21652.5,"rx_mhz":22852.5},{"tx_mhz":21657.5,"rx_mhz":22857.5},{"tx_mhz":21662.5,"rx_mhz":22862.5},{"tx_mhz":21667.5,"rx_mhz":22867.5},{"tx_mhz":21672.5,"rx_mhz":22872.5},{"tx_mhz":21677.5,"rx_mhz":22877.5},{"tx_mhz":21682.5,"rx_mhz":22882.5},{"tx_mhz":21687.5,"rx_mhz":22887.5},{"tx_mhz":21692.5,"rx_mhz":22892.5},{"tx_mhz":21697.5,"rx_mhz":22897.5},{"tx_mhz":21702.5,"rx_mhz":22902.5},{"tx_mhz":21707.5,"rx_mhz":22907.5},{"tx_mhz":21712.5,"rx_mhz":22912.5},{"tx_mhz":21717.5,"rx_mhz":22917.5},{"tx_mhz":21722.5,"rx_mhz":22922.5},{"tx_mhz":21727.5,"rx_mhz":22927.5},{"tx_mhz":21732.5,"rx_mhz":22932.5},{"tx_mhz":21737.5,"rx_mhz":22937.5},{"tx_mhz":21742.5,"rx_mhz":22942.5},{"tx_mhz":21747.5,"rx_mhz":22947.5},{"tx_mhz":21752.5,"rx_mhz":22952.5},{"tx_mhz":21757.5,"rx_mhz":22957.5},{"tx_mhz":21762.5,"rx_mhz":22962.5},{"tx_mhz":21767.5,"rx_mhz":22967.5},{"tx_mhz":21772.5,"rx_mhz":22972.5},{"tx_mhz":21777.5,"rx_mhz":22977.5},{"tx_mhz":21782.5,"rx_mhz":22982.5},{"tx_mhz":21787.5,"rx_mhz":22987.5},{"tx_mhz":21792.5,"rx_mhz":22992.5},{"tx_mhz":21797.5,"rx_mhz":22997.5},{"tx_mhz":22302.5,"rx_mhz":23502.5},{"tx_mhz":22307.5,"rx_mhz":23507.5},{"tx_mhz":22312.5,"rx_mhz":23512.5},{"tx_mhz":22317.5,"rx_mhz":23517.5},{"tx_mhz":22322.5,"rx_mhz":23522.5},{"tx_mhz":22327.5,"rx_mhz":23527.5},{"tx_mhz":22332.5,"rx_mhz":23532.5},{"tx_mhz":22337.5,"rx_mhz":23537.5},{"tx_mhz":22342.5,"rx_mhz":23542.5},{"tx_mhz":22347.5,"rx_mhz":23547.5},{"tx_mhz":22352.5,"rx_mhz":23552.5},{"tx_mhz":22357.5,"rx_mhz":23557.5},{"tx_mhz":22362.5,"rx_mhz":23562.5},{"tx_mhz":22367.5,"rx_mhz":23567.5},{"tx_mhz":22372.5,"rx_mhz":23572.5},{"tx_mhz":22377.5,"rx_mhz":23577.5},{"tx_mhz":22382.5,"rx_mhz":23582.5},{"tx_mhz":22387.5,"rx_mhz":23587.5},{"tx_mhz":22392.5,"rx_mhz":23592.5},{"tx_mhz":22397.5,"rx_mhz":23597.5}]},{"cfr_paragraph":"(s)(4)","channel_bandwidth":"20 MHz","rows":[{"tx_mhz":21205.0,"rx_mhz":22405.0},{"tx_mhz":21215.0,"rx_mhz":22415.0},{"tx_mhz":21225.0,"rx_mhz":22425.0},{"tx_mhz":21235.0,"rx_mhz":22435.0},{"tx_mhz":21245.0,"rx_mhz":22445.0},{"tx_mhz":21255.0,"rx_mhz":22455.0},{"tx_mhz":21265.0,"rx_mhz":22465.0},{"tx_mhz":21275.0,"rx_mhz":22475.0},{"tx_mhz":21285.0,"rx_mhz":22485.0},{"tx_mhz":21295.0,"rx_mhz":22495.0},{"tx_mhz":21305.0,"rx_mhz":22505.0},{"tx_mhz":21315.0,"rx_mhz":22515.0},{"tx_mhz":21325.0,"rx_mhz":22525.0},{"tx_mhz":21335.0,"rx_mhz":22535.0},{"tx_mhz":21345.0,"rx_mhz":22545.0},{"tx_mhz":21355.0,"rx_mhz":22555.0},{"tx_mhz":21365.0,"rx_mhz":22565.0},{"tx_mhz":21375.0,"rx_mhz":22575.0},{"tx_mhz":21385.0,"rx_mhz":22585.0},{"tx_mhz":21395.0,"rx_mhz":22595.0},{"tx_mhz":21405.0,"rx_mhz":22605.0},{"tx_mhz":21415.0,"rx_mhz":22615.0},{"tx_mhz":21425.0,"rx_mhz":22625.0},{"tx_mhz":21435.0,"rx_mhz":22635.0},{"tx_mhz":21445.0,"rx_mhz":22645.0},{"tx_mhz":21455.0,"rx_mhz":22655.0},{"tx_mhz":21465.0,"rx_mhz":22665.0},{"tx_mhz":21475.0,"rx_mhz":22675.0},{"tx_mhz":21485.0,"rx_mhz":22685.0},{"tx_mhz":21495.0,"rx_mhz":22695.0},{"tx_mhz":21505.0,"rx_mhz":22705.0},{"tx_mhz":21515.0,"rx_mhz":22715.0},{"tx_mhz":21525.0,"rx_mhz":22725.0},{"tx_mhz":21535.0,"rx_mhz":22735.0},{"tx_mhz":21545.0,"rx_mhz":22745.0},{"tx_mhz":21555.0,"rx_mhz":22755.0},{"tx_mhz":21565.0,"rx_mhz":22765.0},{"tx_mhz":21575.0,"rx_mhz":22775.0},{"tx_mhz":21585.0,"rx_mhz":22785.0},{"tx_mhz":21595.0,"rx_mhz":22795.0},{"tx_mhz":21605.0,"rx_mhz":22805.0},{"tx_mhz":21615.0,"rx_mhz":22815.0},{"tx_mhz":21625.0,"rx_mhz":22825.0},{"tx_mhz":21635.0,"rx_mhz":22835.0},{"tx_mhz":21645.0,"rx_mhz":22845.0},{"tx_mhz":21655.0,"rx_mhz":22855.0},{"tx_mhz":21665.0,"rx_mhz":22865.0},{"tx_mhz":21675.0,"rx_mhz":22875.0},{"tx_mhz":21685.0,"rx_mhz":22885.0},{"tx_mhz":21695.0,"rx_mhz":22895.0},{"tx_mhz":21705.0,"rx_mhz":22905.0},{"tx_mhz":21715.0,"rx_mhz":22915.0},{"tx_mhz":21725.0,"rx_mhz":22925.0},{"tx_mhz":21735.0,"rx_mhz":22935.0},{"tx_mhz":21745.0,"rx_mhz":22945.0},{"tx_mhz":21755.0,"rx_mhz":22955.0},{"tx_mhz":21765.0,"rx_mhz":22965.0},{"tx_mhz":21775.0,"rx_mhz":22975.0},{"tx_mhz":21785.0,"rx_mhz":22985.0},{"tx_mhz":21795.0,"rx_mhz":22995.0},{"tx_mhz":21805.0,"rx_mhz":23005.0},{"tx_mhz":21815.0,"rx_mhz":23015.0},{"tx_mhz":21825.0,"rx_mhz":23025.0},{"tx_mhz":21835.0,"rx_mhz":23035.0},{"tx_mhz":21845.0,"rx_mhz":23045.0},{"tx_mhz":21855.0,"rx_mhz":23055.0},{"tx_mhz":21865.0,"rx_mhz":23065.0},{"tx_mhz":21875.0,"rx_mhz":23075.0},{"tx_mhz":21885.0,"rx_mhz":23085.0},{"tx_mhz":21895.0,"rx_mhz":23095.0},{"tx_mhz":21905.0,"rx_mhz":23105.0},{"tx_mhz":21915.0,"rx_mhz":23115.0},{"tx_mhz":21925.0,"rx_mhz":23125.0},{"tx_mhz":21935.0,"rx_mhz":23135.0},{"tx_mhz":21945.0,"rx_mhz":23145.0},{"tx_mhz":21955.0,"rx_mhz":23155.0},{"tx_mhz":21965.0,"rx_mhz":23165.0},{"tx_mhz":21975.0,"rx_mhz":23175.0},{"tx_mhz":21985.0,"rx_mhz":23185.0},{"tx_mhz":21995.0,"rx_mhz":23195.0},{"tx_mhz":22005.0,"rx_mhz":23205.0},{"tx_mhz":22015.0,"rx_mhz":23215.0},{"tx_mhz":22025.0,"rx_mhz":23225.0},{"tx_mhz":22035.0,"rx_mhz":23235.0},{"tx_mhz":22045.0,"rx_mhz":23245.0},{"tx_mhz":22055.0,"rx_mhz":23255.0},{"tx_mhz":22065.0,"rx_mhz":23265.0},{"tx_mhz":22075.0,"rx_mhz":23275.0},{"tx_mhz":22085.0,"rx_mhz":23285.0},{"tx_mhz":22095.0,"rx_mhz":23295.0},{"tx_mhz":22105.0,"rx_mhz":23305.0},{"tx_mhz":22115.0,"rx_mhz":23315.0},{"tx_mhz":22125.0,"rx_mhz":23325.0},{"tx_mhz":22135.0,"rx_mhz":23335.0},{"tx_mhz":22145.0,"rx_mhz":23345.0},{"tx_mhz":22155.0,"rx_mhz":23355.0},{"tx_mhz":22165.0,"rx_mhz":23365.0},{"tx_mhz":22175.0,"rx_mhz":23375.0},{"tx_mhz":22185.0,"rx_mhz":23385.0},{"tx_mhz":22195.0,"rx_mhz":23395.0},{"tx_mhz":22205.0,"rx_mhz":23405.0},{"tx_mhz":22215.0,"rx_mhz":23415.0},{"tx_mhz":22225.0,"rx_mhz":23425.0},{"tx_mhz":22235.0,"rx_mhz":23435.0},{"tx_mhz":22245.0,"rx_mhz":23445.0},{"tx_mhz":22255.0,"rx_mhz":23455.0},{"tx_mhz":22265.0,"rx_mhz":23465.0},{"tx_mhz":22275.0,"rx_mhz":23475.0},{"tx_mhz":22285.0,"rx_mhz":23485.0},{"tx_mhz":22295.0,"rx_mhz":23495.0},{"tx_mhz":22305.0,"rx_mhz":23505.0},{"tx_mhz":22315.0,"rx_mhz":23515.0},{"tx_mhz":22325.0,"rx_mhz":23525.0},{"tx_mhz":22335.0,"rx_mhz":23535.0},{"tx_mhz":22345.0,"rx_mhz":23545.0},{"tx_mhz":22355.0,"rx_mhz":23555.0},{"tx_mhz":22365.0,"rx_mhz":23565.0},{"tx_mhz":22375.0,"rx_mhz":23575.0},{"tx_mhz":22385.0,"rx_mhz":23585.0},{"tx_mhz":22395.0,"rx_mhz":23595.0}]},{"cfr_paragraph":"(s)(5)","channel_bandwidth":"30 MHz","rows":[{"tx_mhz":21210.0,"rx_mhz":22410.0},{"tx_mhz":21230.0,"rx_mhz":22430.0},{"tx_mhz":21260.0,"rx_mhz":22460.0},{"tx_mhz":21280.0,"rx_mhz":22480.0},{"tx_mhz":21310.0,"rx_mhz":22510.0},{"tx_mhz":21330.0,"rx_mhz":22530.0},{"tx_mhz":21360.0,"rx_mhz":22560.0},{"tx_mhz":21380.0,"rx_mhz":22580.0},{"tx_mhz":21410.0,"rx_mhz":22610.0},{"tx_mhz":21430.0,"rx_mhz":22630.0},{"tx_mhz":21460.0,"rx_mhz":22660.0},{"tx_mhz":21480.0,"rx_mhz":22680.0},{"tx_mhz":21510.0,"rx_mhz":22710.0},{"tx_mhz":21530.0,"rx_mhz":22730.0},{"tx_mhz":21560.0,"rx_mhz":22760.0},{"tx_mhz":21580.0,"rx_mhz":22780.0},{"tx_mhz":21610.0,"rx_mhz":22810.0},{"tx_mhz":21630.0,"rx_mhz":22830.0},{"tx_mhz":21660.0,"rx_mhz":22860.0},{"tx_mhz":21680.0,"rx_mhz":22880.0},{"tx_mhz":21710.0,"rx_mhz":22910.0},{"tx_mhz":21730.0,"rx_mhz":22930.0},{"tx_mhz":21760.0,"rx_mhz":22960.0},{"tx_mhz":21780.0,"rx_mhz":22980.0},{"tx_mhz":21810.0,"rx_mhz":23010.0},{"tx_mhz":21830.0,"rx_mhz":23030.0},{"tx_mhz":21860.0,"rx_mhz":23060.0},{"tx_mhz":21880.0,"rx_mhz":23080.0},{"tx_mhz":21910.0,"rx_mhz":23110.0},{"tx_mhz":21930.0,"rx_mhz":23130.0},{"tx_mhz":21960.0,"rx_mhz":23160.0},{"tx_mhz":21980.0,"rx_mhz":23180.0},{"tx_mhz":22010.0,"rx_mhz":23210.0},{"tx_mhz":22030.0,"rx_mhz":23230.0},{"tx_mhz":22060.0,"rx_mhz":23260.0},{"tx_mhz":22080.0,"rx_mhz":23280.0},{"tx_mhz":22110.0,"rx_mhz":23310.0},{"tx_mhz":22130.0,"rx_mhz":23330.0},{"tx_mhz":22160.0,"rx_mhz":23360.0},{"tx_mhz":22180.0,"rx_mhz":23380.0},{"tx_mhz":22210.0,"rx_mhz":23410.0},{"tx_mhz":22230.0,"rx_mhz":23430.0},{"tx_mhz":22260.0,"rx_mhz":23460.0},{"tx_mhz":22280.0,"rx_mhz":23480.0},{"tx_mhz":22310.0,"rx_mhz":23510.0},{"tx_mhz":22330.0,"rx_mhz":23530.0},{"tx_mhz":22360.0,"rx_mhz":23560.0},{"tx_mhz":22380.0,"rx_mhz":23580.0}]},{"cfr_paragraph":"(s)(6)","channel_bandwidth":"40 MHz","rows":[{"tx_mhz":21235.0,"rx_mhz":22435.0},{"tx_mhz":21285.0,"rx_mhz":22485.0},{"tx_mhz":21335.0,"rx_mhz":22535.0},{"tx_mhz":21385.0,"rx_mhz":22585.0},{"tx_mhz":21435.0,"rx_mhz":22635.0},{"tx_mhz":21485.0,"rx_mhz":22685.0},{"tx_mhz":21535.0,"rx_mhz":22735.0},{"tx_mhz":21585.0,"rx_mhz":22785.0},{"tx_mhz":21635.0,"rx_mhz":22835.0},{"tx_mhz":21685.0,"rx_mhz":22885.0},{"tx_mhz":21735.0,"rx_mhz":22935.0},{"tx_mhz":21785.0,"rx_mhz":22985.0},{"tx_mhz":21835.0,"rx_mhz":23035.0},{"tx_mhz":21885.0,"rx_mhz":23085.0},{"tx_mhz":21935.0,"rx_mhz":23135.0},{"tx_mhz":21985.0,"rx_mhz":23185.0},{"tx_mhz":22035.0,"rx_mhz":23235.0},{"tx_mhz":22085.0,"rx_mhz":23285.0},{"tx_mhz":22135.0,"rx_mhz":23335.0},{"tx_mhz":22185.0,"rx_mhz":23385.0},{"tx_mhz":22235.0,"rx_mhz":23435.0},{"tx_mhz":22285.0,"rx_mhz":23485.0},{"tx_mhz":22335.0,"rx_mhz":23535.0},{"tx_mhz":22385.0,"rx_mhz":23585.0}]},{"cfr_paragraph":"(s)(7)","channel_bandwidth":"50 MHz","rows":[{"tx_mhz":21220.0,"rx_mhz":22420.0},{"tx_mhz":21270.0,"rx_mhz":22470.0},{"tx_mhz":21320.0,"rx_mhz":22520.0},{"tx_mhz":21370.0,"rx_mhz":22570.0},{"tx_mhz":21420.0,"rx_mhz":22620.0},{"tx_mhz":21470.0,"rx_mhz":22670.0},{"tx_mhz":21520.0,"rx_mhz":22720.0},{"tx_mhz":21570.0,"rx_mhz":22770.0},{"tx_mhz":21620.0,"rx_mhz":22820.0},{"tx_mhz":21670.0,"rx_mhz":22870.0},{"tx_mhz":21720.0,"rx_mhz":22920.0},{"tx_mhz":21770.0,"rx_mhz":22970.0},{"tx_mhz":21820.0,"rx_mhz":23020.0},{"tx_mhz":21870.0,"rx_mhz":23070.0},{"tx_mhz":21920.0,"rx_mhz":23120.0},{"tx_mhz":21970.0,"rx_mhz":23170.0},{"tx_mhz":22020.0,"rx_mhz":23220.0},{"tx_mhz":22070.0,"rx_mhz":23270.0},{"tx_mhz":22120.0,"rx_mhz":23320.0},{"tx_mhz":22170.0,"rx_mhz":23370.0},{"tx_mhz":22220.0,"rx_mhz":23420.0},{"tx_mhz":22270.0,"rx_mhz":23470.0},{"tx_mhz":22320.0,"rx_mhz":23520.0},{"tx_mhz":22370.0,"rx_mhz":23570.0}]}]}};
+
+function channelPlanBandRange(key) {
+  const [lo, hi] = key.split("-").map(Number);
+  return [lo, hi];
+}
+
+// Returns every CHANNEL_PLANS entry whose CFR band segment overlaps [lo, hi].
+function findChannelPlanBands(lo, hi) {
+  return Object.keys(CHANNEL_PLANS)
+    .filter(key => { const [pLo, pHi] = channelPlanBandRange(key); return pLo < hi && pHi > lo; })
+    .map(key => ({ key, ...CHANNEL_PLANS[key] }));
+}
 
 /* ============================================================================
    RENDERING
@@ -624,8 +760,127 @@ function renderFullBandRow(r) {
   </tr>`;
 }
 
-// channelPlan: reserved for the future overlay hook described above; unused today.
-function renderBandTable(mfg, fam, band, channelPlan) {
+/* ------------------------------------------------------------- FREQ MAP */
+
+const CONF_COLOR_VAR = { verified: "--verified-fg", inferred: "--inferred-fg", unconfirmed: "--unconfirmed-fg" };
+
+// Every tx/rx (or band_min/band_max) value a band's rows touch, for scaling the diagram.
+function bandDiagramPoints(band) {
+  const pts = [];
+  (band.rows || []).forEach(r => {
+    const vs = band.model === "fixed_subband" ? [r.tx_min, r.tx_max, r.rx_min, r.rx_max] : [r.band_min, r.band_max];
+    vs.forEach(v => { if (v != null) pts.push(v); });
+  });
+  return pts;
+}
+
+// Renders a scaled SVG frequency map for one band: sub-band/tuning-window brackets,
+// plus an optional FCC channel-plan tick overlay (findChannelPlanBands) toggled by
+// a small bandwidth chip row. Returns "" when there's nothing to plot (e.g. every
+// row's ranges are null, or model is unknown) — no diagram is better than a fake one.
+function renderFreqMap(band, uid) {
+  const rows = band.rows || [];
+  const pts = bandDiagramPoints(band);
+  if (pts.length === 0) return "";
+
+  let lo = Math.min(...pts), hi = Math.max(...pts);
+  const plansHere = findChannelPlanBands(lo, hi);
+  const pad = Math.max((hi - lo) * 0.05, 4);
+  lo -= pad; hi += pad;
+
+  const W = 900, MARGIN = 10, LANE_H = band.model === "fixed_subband" ? 32 : 26;
+  const x = f => MARGIN + (f - lo) / (hi - lo) * (W - 2 * MARGIN);
+
+  let y = 26;
+  const laneSvg = [];
+  let anyNullRow = false;
+
+  if (band.model === "fixed_subband") {
+    rows.forEach(r => {
+      if (r.tx_min == null && r.rx_min == null) { anyNullRow = true; return; }
+      const colorVar = CONF_COLOR_VAR[r.confidence] || "--muted";
+      const label = escapeHtml([r.subband != null ? `Sub-band ${r.subband}` : null, r.side].filter(Boolean).join(" · ") || "—");
+      let seg = "";
+      if (r.tx_min != null && r.tx_max != null) {
+        const tt = escapeHtml(`Tx ${r.tx_min}–${r.tx_max} MHz${r.part_number ? " · " + r.part_number : ""}`);
+        seg += `<rect x="${x(r.tx_min).toFixed(1)}" y="${y}" width="${Math.max(x(r.tx_max) - x(r.tx_min), 1.5).toFixed(1)}" height="9" rx="2" fill="var(${colorVar})" fill-opacity="0.4" stroke="var(${colorVar})" stroke-width="1"><title>${tt}</title></rect>`;
+      }
+      if (r.rx_min != null && r.rx_max != null) {
+        const tt = escapeHtml(`Rx ${r.rx_min}–${r.rx_max} MHz${r.part_number ? " · " + r.part_number : ""}`);
+        seg += `<rect x="${x(r.rx_min).toFixed(1)}" y="${y + 12}" width="${Math.max(x(r.rx_max) - x(r.rx_min), 1.5).toFixed(1)}" height="9" rx="2" fill="var(${colorVar})" fill-opacity="0.15" stroke="var(${colorVar})" stroke-width="1" stroke-dasharray="2,2"><title>${tt}</title></rect>`;
+      }
+      if (!seg) { anyNullRow = true; return; }
+      laneSvg.push(`<text x="${MARGIN}" y="${y - 3}" font-size="9" fill="var(--muted)">${label}</text>${seg}`);
+      y += LANE_H;
+    });
+  } else {
+    rows.forEach(r => {
+      if (r.band_min == null || r.band_max == null) { anyNullRow = true; return; }
+      const bx = x(r.band_min), bw = Math.max(x(r.band_max) - x(r.band_min), 1.5);
+      const tag = r.max_tuning_range
+        ? `tunable window ${r.max_tuning_range} MHz — position set by ACU/filter selection at order time`
+        : "tuning range";
+      const tt = escapeHtml(`${r.band_min}–${r.band_max} MHz${r.notes ? " · " + r.notes : ""}`);
+      laneSvg.push(`<text x="${bx.toFixed(1)}" y="${y - 3}" font-size="9" fill="var(--muted)">${escapeHtml(tag)}${r.notes ? " (" + escapeHtml(r.notes) + ")" : ""}</text>` +
+        `<rect x="${bx.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="12" rx="3" fill="var(--accent)" fill-opacity="0.12" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4,2"><title>${tt}</title></rect>`);
+      y += LANE_H;
+    });
+  }
+
+  if (laneSvg.length === 0) return "";
+
+  // Optional FCC channel-plan tick overlay, one toggleable lane per available bandwidth.
+  const bwGroups = {};
+  plansHere.forEach(pb => pb.plans.forEach(p => {
+    (bwGroups[p.channel_bandwidth] = bwGroups[p.channel_bandwidth] || []).push(...p.rows);
+  }));
+  const bwKeys = Object.keys(bwGroups).sort((a, b) => parseFloat(a) - parseFloat(b));
+
+  let tickLaneY = y + 4;
+  let ticksSvg = "";
+  bwKeys.forEach((bw, idx) => {
+    const inRange = bwGroups[bw].filter(r => r.tx_mhz >= lo && r.tx_mhz <= hi);
+    const ticks = inRange.map(r => {
+      const tx = x(r.tx_mhz).toFixed(1);
+      const cls = r.note ? ' class="chan-tick-flag"' : "";
+      const tt = escapeHtml(`${r.tx_mhz} MHz${r.rx_mhz != null ? " / " + r.rx_mhz + " MHz" : " (unpaired)"}${r.note ? " — " + r.note : ""}`);
+      return `<line${cls} x1="${tx}" y1="${tickLaneY}" x2="${tx}" y2="${tickLaneY + 10}" stroke="var(--accent)" stroke-width="1.4"><title>${tt}</title></line>`;
+    }).join("");
+    ticksSvg += `<g class="chan-plan-lane" data-uid="${uid}" data-bw="${escapeHtml(bw)}" style="display:${idx === 0 ? "block" : "none"}">${ticks}</g>`;
+  });
+  const axisY = (bwKeys.length ? tickLaneY + 16 : y + 6);
+
+  const svgHtml = `<svg class="freqmap-svg" data-uid="${escapeHtml(uid)}" viewBox="0 0 ${W} ${axisY + 14}">
+    ${laneSvg.join("")}
+    ${ticksSvg}
+    <line x1="${MARGIN}" y1="${axisY}" x2="${W - MARGIN}" y2="${axisY}" stroke="var(--border)"/>
+    <text x="${MARGIN}" y="${axisY + 11}" font-size="10" fill="var(--muted)">${lo.toFixed(0)} MHz</text>
+    <text x="${W - MARGIN}" y="${axisY + 11}" font-size="10" fill="var(--muted)" text-anchor="end">${hi.toFixed(0)} MHz</text>
+  </svg>`;
+
+  const chips = bwKeys.length
+    ? `<span class="freqmap-plans">
+        <span class="freqmap-plans-label">FCC channel plan (§101.147):</span>
+        <button class="chip" data-freqmap="${escapeHtml(uid)}" data-bw="">Off</button>
+        ${bwKeys.map((bw, idx) => `<button class="chip${idx === 0 ? " active" : ""}" data-freqmap="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}">${escapeHtml(bw)}</button>`).join("")}
+      </span>`
+    : "";
+
+  return `<div class="freqmap">
+    <div class="freqmap-head"><span class="freqmap-title">Frequency map</span>${chips}</div>
+    ${svgHtml}
+    <div class="freqmap-legend">
+      <span><span class="sw" style="background:var(--verified-fg)"></span>verified</span>
+      <span><span class="sw" style="background:var(--inferred-fg)"></span>inferred</span>
+      <span><span class="sw" style="background:var(--unconfirmed-fg)"></span>unconfirmed</span>
+      ${band.model === "fixed_subband" ? '<span>solid = Tx, dashed = Rx</span>' : '<span>dashed box = tuning window, not a fixed position</span>'}
+      ${bwKeys.length ? '<span>tick = FCC channel plan Tx (hover for pair / caveats)</span>' : ''}
+      ${anyNullRow ? '<span>rows with unpublished ranges are omitted here, not placed by guess</span>' : ''}
+    </div>
+  </div>`;
+}
+
+function renderBandTable(mfg, fam, band, uid) {
   const rows = band.rows || [];
   const info = band.model ? (MODEL_INFO[band.model] || null) : null;
   const note = info ? info.note : UNKNOWN_MODEL_NOTE;
@@ -667,12 +922,14 @@ function renderBandTable(mfg, fam, band, channelPlan) {
   }
 
   const openAttr = rows.length > 0 ? " open" : "";
+  const freqMap = rows.length > 0 ? renderFreqMap(band, uid) : "";
   return `<details class="band"${openAttr}>
     <summary>
       <span class="band-name">${escapeHtml(band.band)}</span>
       <span class="band-meta">${escapeHtml(label)} · T/R: ${escapeHtml(fmtSpacingsPlain(band.tr_spacings))} · ${rows.length} row${rows.length === 1 ? "" : "s"}</span>
     </summary>
     <div class="band-note">${escapeHtml(note)}</div>
+    ${freqMap}
     <div class="table-scroll">${body}</div>
   </details>`;
 }
@@ -690,7 +947,7 @@ function renderFamilyPanel(mfg, fam) {
       <div class="family-meta">${count} row${count === 1 ? "" : "s"} catalogued · Last verified: ${verified}</div>
       ${fam.description ? `<p class="family-desc">${escapeHtml(fam.description)}</p>` : ""}
     </div>
-    ${fam.bands.map(b => renderBandTable(mfg, fam, b, channelPlans[b.band])).join("")}
+    ${fam.bands.map(b => renderBandTable(mfg, fam, b, `${fam.id}--${b.band}`.replace(/[^a-z0-9]+/gi, "-"))).join("")}
   `;
 }
 
@@ -911,6 +1168,15 @@ document.getElementById("search").addEventListener("input", e => {
 
 document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
 document.getElementById("exportJsonBtn").addEventListener("click", exportJson);
+
+document.getElementById("main").addEventListener("click", e => {
+  const btn = e.target.closest("[data-freqmap]");
+  if (!btn) return;
+  const uid = btn.dataset.freqmap, bw = btn.dataset.bw;
+  btn.parentElement.querySelectorAll(`[data-freqmap="${uid}"]`).forEach(b => b.classList.toggle("active", b === btn));
+  const svg = btn.closest(".freqmap").querySelector(`svg.freqmap-svg[data-uid="${uid}"]`);
+  if (svg) svg.querySelectorAll(".chan-plan-lane").forEach(g => { g.style.display = (bw && g.dataset.bw === bw) ? "block" : "none"; });
+});
 
 render();
 </script>
