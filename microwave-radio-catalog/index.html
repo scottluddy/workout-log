@@ -122,6 +122,27 @@
   .freqmap-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 0 8px 0; font-size: 10.5px; color: var(--muted); }
   .freqmap-legend span.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
   .chan-tick-flag { stroke: var(--unconfirmed-fg) !important; stroke-width: 2 !important; }
+  .chan-section { padding: 14px; border-top: 1px solid var(--border); }
+  .chan-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .chip-lg {
+    padding: 9px 20px; border: 2px solid var(--border); border-radius: 10px;
+    background: var(--panel); color: var(--text); font-size: 16px; font-weight: 700; cursor: pointer;
+  }
+  .chip-lg.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chan-unit-note { margin: 0 0 14px 0; color: var(--muted); font-size: 12.5px; }
+  .chan-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .chan-pill {
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    border: 2px solid var(--border); border-radius: 12px; background: var(--panel);
+  }
+  .chan-pill-flag { border-color: var(--unconfirmed-fg); }
+  .chan-num {
+    flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--head-bg); color: var(--muted); font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .chan-pair { display: flex; align-items: baseline; gap: 7px; font-variant-numeric: tabular-nums; font-weight: 800; font-size: 20px; letter-spacing: -.01em; }
+  .chan-sep { color: var(--muted); font-weight: 400; font-size: 16px; }
   footer.foot { padding: 20px 16px 40px; text-align: center; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -222,6 +243,20 @@
       The renderer (MODEL_INFO / renderBandTable below) already has a column
       set and explanatory note wired up for this type — do not assume every
       row has tx_min/tx_max when touching that code.
+
+   4) channel_plan_display — no vendor data at all. Renders the FCC 101.147
+      channel plan itself (from CHANNEL_PLANS below), organized by paired
+      channel (low ↔ high), for a chosen subset of published channel
+      bandwidths. This is what the "Generic" platform family uses instead
+      of real sub-band rows. `rows` stays [] — there is nothing vendor-
+      specific to catalogue — and the fields live on the band object itself:
+        {
+          band, model: "channel_plan_display",
+          plan_key,     // CHANNEL_PLANS key, e.g. "10700-11700"
+          bandwidths,   // channel_bandwidth strings to offer, in the order
+                        // the selector should list them, e.g. ["10 MHz", "30 MHz"]
+          tr_spacings: [], rows: []
+        }
 
    Rule for every field above: if a value is unknown, write `null`. Never
    interpolate, round, or infer a number that wasn't explicitly published.
@@ -621,6 +656,27 @@ const CATALOG = {
           ]
         }
       ]
+    },
+    // --------------------------------------------------------------- GENERIC
+    {
+      id: "generic",
+      name: "Generic",
+      families: [
+        {
+          id: "generic-platform",
+          group: null,
+          name: "Generic Platform",
+          description: "Not tied to any vendor — shows the FCC 101.147 channel plan itself, organized by paired channel (low ↔ high), for only the band/bandwidth combinations actually in use.",
+          last_verified: null,
+          bands: [
+            { band: "6.1 GHz", model: "channel_plan_display", plan_key: "5925-6425", bandwidths: ["10 MHz", "30 MHz", "60 MHz"], tr_spacings: [], rows: [] },
+            { band: "6.7 GHz", model: "channel_plan_display", plan_key: "6525-6875", bandwidths: ["10 MHz", "30 MHz"], tr_spacings: [], rows: [] },
+            { band: "11 GHz", model: "channel_plan_display", plan_key: "10700-11700", bandwidths: ["10 MHz", "30 MHz", "40 MHz", "80 MHz"], tr_spacings: [], rows: [] },
+            { band: "18 GHz", model: "channel_plan_display", plan_key: "17700-19700", bandwidths: ["40 MHz", "50 MHz", "80 MHz"], tr_spacings: [], rows: [] },
+            { band: "23 GHz", model: "channel_plan_display", plan_key: "21200-23600", bandwidths: ["50 MHz"], tr_spacings: [], rows: [] }
+          ]
+        }
+      ]
     }
   ]
 };
@@ -683,6 +739,10 @@ const MODEL_INFO = {
   full_band_tunable: {
     label: "Full-band tunable",
     note: "Full-band tunable ODU — tunes anywhere within the band edges, no filter change required. (stub — no data catalogued yet)"
+  },
+  channel_plan_display: {
+    label: "Channel plan",
+    note: "No vendor sub-band data — this is the FCC 101.147 channel plan itself, organized by paired channel."
   }
 };
 const UNKNOWN_MODEL_NOTE = "Record type not yet determined for this band.";
@@ -880,7 +940,52 @@ function renderFreqMap(band, uid) {
   </div>`;
 }
 
+/* --------------------------------------------------------- CHANNEL PLAN GRID */
+
+// Renders one band of a "channel_plan_display" family: a bandwidth selector
+// (large chips) plus, per bandwidth, a grid of pills — one pill per paired
+// channel (low ↔ high), in plan order. No vendor data, no extra columns —
+// just the channel plan itself, sized for someone scanning it at a glance.
+function renderChannelPlanBand(band, uid) {
+  const planEntry = CHANNEL_PLANS[band.plan_key];
+  const allPlans = planEntry ? planEntry.plans : [];
+  const bwList = (band.bandwidths || []).filter(bw => allPlans.some(p => p.channel_bandwidth === bw));
+
+  const sections = bwList.map((bw, idx) => {
+    const plan = allPlans.find(p => p.channel_bandwidth === bw);
+    const pills = plan.rows.map((r, i) => {
+      const flagged = r.note ? " chan-pill-flag" : "";
+      const low = r.tx_mhz != null ? r.tx_mhz : "—";
+      const high = r.rx_mhz != null ? r.rx_mhz : "—";
+      const tt = escapeHtml(`Channel ${i + 1}` + (r.note ? " — " + r.note : ""));
+      return `<div class="chan-pill${flagged}" title="${tt}">
+        <span class="chan-num">${i + 1}</span>
+        <span class="chan-pair"><span class="chan-freq">${low}</span><span class="chan-sep">&#8596;</span><span class="chan-freq">${high}</span></span>
+      </div>`;
+    }).join("");
+    return `<div class="chan-grid" data-uid="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}" style="display:${idx === 0 ? "grid" : "none"}">${pills}</div>`;
+  }).join("");
+
+  const chips = bwList.map((bw, idx) =>
+    `<button class="chip-lg${idx === 0 ? " active" : ""}" data-chanplan="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}">${escapeHtml(bw)}</button>`
+  ).join("");
+
+  return `<details class="band" open>
+    <summary>
+      <span class="band-name">${escapeHtml(band.band)}</span>
+      <span class="band-meta">Channel plan · ${bwList.length} bandwidth option${bwList.length === 1 ? "" : "s"}</span>
+    </summary>
+    <div class="band-note">${escapeHtml(MODEL_INFO.channel_plan_display.note)}</div>
+    <div class="chan-section">
+      <div class="chan-toolbar">${chips}</div>
+      <p class="chan-unit-note">All frequencies in MHz — each pill is one paired channel, low &#8596; high.</p>
+      ${sections}
+    </div>
+  </details>`;
+}
+
 function renderBandTable(mfg, fam, band, uid) {
+  if (band.model === "channel_plan_display") return renderChannelPlanBand(band, uid);
   const rows = band.rows || [];
   const info = band.model ? (MODEL_INFO[band.model] || null) : null;
   const note = info ? info.note : UNKNOWN_MODEL_NOTE;
@@ -1170,12 +1275,21 @@ document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
 document.getElementById("exportJsonBtn").addEventListener("click", exportJson);
 
 document.getElementById("main").addEventListener("click", e => {
-  const btn = e.target.closest("[data-freqmap]");
-  if (!btn) return;
-  const uid = btn.dataset.freqmap, bw = btn.dataset.bw;
-  btn.parentElement.querySelectorAll(`[data-freqmap="${uid}"]`).forEach(b => b.classList.toggle("active", b === btn));
-  const svg = btn.closest(".freqmap").querySelector(`svg.freqmap-svg[data-uid="${uid}"]`);
-  if (svg) svg.querySelectorAll(".chan-plan-lane").forEach(g => { g.style.display = (bw && g.dataset.bw === bw) ? "block" : "none"; });
+  const freqBtn = e.target.closest("[data-freqmap]");
+  if (freqBtn) {
+    const uid = freqBtn.dataset.freqmap, bw = freqBtn.dataset.bw;
+    freqBtn.parentElement.querySelectorAll(`[data-freqmap="${uid}"]`).forEach(b => b.classList.toggle("active", b === freqBtn));
+    const svg = freqBtn.closest(".freqmap").querySelector(`svg.freqmap-svg[data-uid="${uid}"]`);
+    if (svg) svg.querySelectorAll(".chan-plan-lane").forEach(g => { g.style.display = (bw && g.dataset.bw === bw) ? "block" : "none"; });
+    return;
+  }
+  const chanBtn = e.target.closest("[data-chanplan]");
+  if (chanBtn) {
+    const uid = chanBtn.dataset.chanplan, bw = chanBtn.dataset.bw;
+    chanBtn.parentElement.querySelectorAll(`[data-chanplan="${uid}"]`).forEach(b => b.classList.toggle("active", b === chanBtn));
+    const section = chanBtn.closest(".chan-section");
+    section.querySelectorAll(`.chan-grid[data-uid="${uid}"]`).forEach(g => { g.style.display = (g.dataset.bw === bw) ? "grid" : "none"; });
+  }
 });
 
 render();
