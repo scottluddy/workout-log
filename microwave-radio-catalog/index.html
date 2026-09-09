@@ -131,7 +131,31 @@
   .chip-lg.active { background: var(--accent); border-color: var(--accent); color: #fff; }
   .chan-unit-note { margin: 0 0 14px 0; color: var(--muted); font-size: 12.5px; }
   .chan-grid { padding: 8px 0 4px 0; }
-  .chan-spectrum-svg { width: 100%; height: auto; display: block; font-variant-numeric: tabular-nums; }
+  .chan-rail-scroll {
+    overflow-x: auto; padding-bottom: 10px;
+    scrollbar-width: thin; scrollbar-color: var(--accent) var(--head-bg);
+  }
+  .chan-rail-scroll::-webkit-scrollbar { height: 8px; }
+  .chan-rail-scroll::-webkit-scrollbar-track { background: var(--head-bg); border-radius: 4px; }
+  .chan-rail-scroll::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 4px; }
+  .chan-rail {
+    display: inline-grid; min-width: 100%; align-items: center; column-gap: 14px; row-gap: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .chan-edge-cell {
+    padding: 2px 14px; white-space: nowrap; display: flex; flex-direction: column;
+  }
+  .chan-edge-left { align-items: flex-end; text-align: right; border-right: 1px dashed var(--border); }
+  .chan-edge-right { align-items: flex-start; text-align: left; border-left: 1px dashed var(--border); }
+  .chan-edge-label {
+    font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
+  }
+  .chan-edge-value { font-size: 15px; font-weight: 800; color: var(--text); }
+  .chan-val { text-align: center; font-size: 16px; font-weight: 800; color: var(--text); white-space: nowrap; padding: 0 2px; }
+  .chan-flag { color: var(--unconfirmed-fg); }
+  .chan-line-cell { display: flex; justify-content: center; }
+  .chan-line { width: 3px; height: 30px; border-radius: 2px; background: var(--accent); }
+  .chan-line-flag { background: var(--unconfirmed-fg); }
   footer.foot { padding: 20px 16px 40px; text-align: center; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -931,59 +955,50 @@ function renderFreqMap(band, uid) {
 
 /* ----------------------------------------------------------- CHANNEL SPECTRUM */
 
-// One bandwidth's spectrum strip: a single axis spanning the *entire* CFR band
-// (not just where channels happen to fall), with a bold vertical tick at every
-// channel's low frequency and every channel's high frequency, to true scale.
-// Channel-number labels are drawn when there's room for them; past a density
-// threshold they're dropped in favor of a hover tooltip, so labels never
-// overlap into noise. Low/high naturally separate into two clusters because
-// that's how the band is actually organized — no extra encoding needed.
+// One bandwidth's spectrum strip: one bold column per paired channel, low
+// frequency on top and high frequency on bottom (a band's low half and high
+// half are always equal width, so a channel's position within each half
+// lines the two numbers up into a single column). The band's own low/high
+// split point is shown once, at the left and right ends, so the two numbers
+// in every column read in the same frame of reference without repeating it
+// on every channel. Columns are laid out with CSS grid rather than to literal
+// pixel-frequency scale, so density never forces tiny rotated labels — a
+// 50-channel plan just scrolls, with the band-edge values pinned in view.
 function renderChannelSpectrum(lo, hi, plan, uid, bw, active) {
-  const W = 900, MARGIN = 18, TICK_H = 34, BASELINE = 56;
-  const x = f => MARGIN + (f - lo) / (hi - lo) * (W - 2 * MARGIN);
+  const mid = (lo + hi) / 2;
   const rows = plan.rows;
-  const showLabels = rows.length <= 26;
-  const labelRowY = BASELINE + (showLabels ? 34 : 4);
-  const edgeY = labelRowY + 14;
+  const n = rows.length;
 
-  const lowXs = [], highXs = [];
-  let ticks = "";
-  const tick = (freq, chanNum, side, note) => {
-    const tx = x(freq);
-    (side === "low" ? lowXs : highXs).push(tx);
+  const valCell = (val, side, i, note) => {
     const flagged = !!note;
-    const stroke = flagged ? "var(--unconfirmed-fg)" : "var(--accent)";
-    const sw = flagged ? 2.6 : 1.7;
-    const tt = escapeHtml(`Ch ${chanNum} ${side}: ${freq} MHz` + (note ? " — " + note : ""));
-    ticks += `<line x1="${tx.toFixed(1)}" y1="${BASELINE}" x2="${tx.toFixed(1)}" y2="${BASELINE - TICK_H}" stroke="${stroke}" stroke-width="${sw}"><title>${tt}</title></line>`;
-    if (showLabels) {
-      ticks += `<text x="${tx.toFixed(1)}" y="${BASELINE + 5}" font-size="9" font-weight="700" fill="var(--muted)" text-anchor="start" transform="rotate(62 ${tx.toFixed(1)} ${BASELINE + 5})">${chanNum}</text>`;
-    }
+    const label = val != null ? val : "—";
+    const tt = `Ch ${i + 1} ${side}: ${val != null ? val + " MHz" : "unpublished"}` + (note ? " — " + note : "");
+    return `<div class="chan-val${flagged ? " chan-flag" : ""}" title="${escapeHtml(tt)}">${label}</div>`;
   };
-  rows.forEach((r, i) => {
-    if (r.tx_mhz != null) tick(r.tx_mhz, i + 1, "low", r.note);
-    if (r.rx_mhz != null) tick(r.rx_mhz, i + 1, "high", r.note);
-  });
 
-  let clusterCaptions = "";
-  if (lowXs.length) {
-    const mid = (Math.min(...lowXs) + Math.max(...lowXs)) / 2;
-    clusterCaptions += `<text x="${mid.toFixed(1)}" y="${BASELINE - TICK_H - 8}" font-size="11" font-weight="800" letter-spacing="1" fill="var(--muted)" text-anchor="middle">LOW</text>`;
-  }
-  if (highXs.length) {
-    const mid = (Math.min(...highXs) + Math.max(...highXs)) / 2;
-    clusterCaptions += `<text x="${mid.toFixed(1)}" y="${BASELINE - TICK_H - 8}" font-size="11" font-weight="800" letter-spacing="1" fill="var(--muted)" text-anchor="middle">HIGH</text>`;
-  }
+  const loCells = rows.map((r, i) => valCell(r.tx_mhz, "low", i, r.note)).join("");
+  const hiCells = rows.map((r, i) => valCell(r.rx_mhz, "high", i, r.note)).join("");
+  const lineCells = rows.map(r =>
+    `<div class="chan-line-cell"><div class="chan-line${r.note ? " chan-line-flag" : ""}"></div></div>`
+  ).join("");
 
-  const svgHtml = `<svg class="chan-spectrum-svg" viewBox="0 0 ${W} ${edgeY + 8}">
-    ${clusterCaptions}
-    ${ticks}
-    <line x1="${MARGIN}" y1="${BASELINE}" x2="${W - MARGIN}" y2="${BASELINE}" stroke="var(--border)" stroke-width="1.5"/>
-    <text x="${MARGIN}" y="${edgeY}" font-size="12" font-weight="700" fill="var(--text)">${lo} MHz</text>
-    <text x="${W - MARGIN}" y="${edgeY}" font-size="12" font-weight="700" fill="var(--text)" text-anchor="end">${hi} MHz</text>
-  </svg>`;
+  const rail = `<div class="chan-rail" style="grid-template-columns: auto repeat(${n}, minmax(60px, auto)) auto;">
+    <div class="chan-edge-cell chan-edge-left"><span class="chan-edge-label">Low</span><span class="chan-edge-value">${lo}</span></div>
+    ${loCells}
+    <div class="chan-edge-cell chan-edge-right"><span class="chan-edge-value">${mid}</span></div>
 
-  return `<div class="chan-grid" data-uid="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}" style="display:${active ? "block" : "none"}">${svgHtml}</div>`;
+    <div class="chan-edge-cell chan-edge-left"></div>
+    ${lineCells}
+    <div class="chan-edge-cell chan-edge-right"></div>
+
+    <div class="chan-edge-cell chan-edge-left"><span class="chan-edge-label">High</span><span class="chan-edge-value">${mid}</span></div>
+    ${hiCells}
+    <div class="chan-edge-cell chan-edge-right"><span class="chan-edge-value">${hi}</span></div>
+  </div>`;
+
+  return `<div class="chan-grid" data-uid="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}" style="display:${active ? "block" : "none"}">
+    <div class="chan-rail-scroll">${rail}</div>
+  </div>`;
 }
 
 // Renders one band of a "channel_plan_display" family: a bandwidth selector
@@ -1012,7 +1027,7 @@ function renderChannelPlanBand(band, uid) {
     <div class="band-note">${escapeHtml(MODEL_INFO.channel_plan_display.note)}</div>
     <div class="chan-section">
       <div class="chan-toolbar">${chips}</div>
-      <p class="chan-unit-note">Full band span, to scale — each tick is one channel's low or high frequency; low and high pair by position (1st with 1st, 2nd with 2nd, …).</p>
+      <p class="chan-unit-note">Each column is one paired channel — top number is its low (Tx) frequency, bottom number is its high (Rx) frequency. The band's low/high split point is shown at each end. Scroll horizontally to see every channel.</p>
       ${sections}
     </div>
   </details>`;
