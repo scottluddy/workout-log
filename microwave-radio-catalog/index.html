@@ -130,19 +130,8 @@
   }
   .chip-lg.active { background: var(--accent); border-color: var(--accent); color: #fff; }
   .chan-unit-note { margin: 0 0 14px 0; color: var(--muted); font-size: 12.5px; }
-  .chan-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
-  .chan-pill {
-    display: flex; align-items: center; gap: 12px; padding: 10px 14px;
-    border: 2px solid var(--border); border-radius: 12px; background: var(--panel);
-  }
-  .chan-pill-flag { border-color: var(--unconfirmed-fg); }
-  .chan-num {
-    flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%;
-    background: var(--head-bg); color: var(--muted); font-weight: 700; font-size: 13px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .chan-pair { display: flex; align-items: baseline; gap: 7px; font-variant-numeric: tabular-nums; font-weight: 800; font-size: 20px; letter-spacing: -.01em; }
-  .chan-sep { color: var(--muted); font-weight: 400; font-size: 16px; }
+  .chan-grid { padding: 8px 0 4px 0; }
+  .chan-spectrum-svg { width: 100%; height: auto; display: block; font-variant-numeric: tabular-nums; }
   footer.foot { padding: 20px 16px 40px; text-align: center; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -940,31 +929,76 @@ function renderFreqMap(band, uid) {
   </div>`;
 }
 
-/* --------------------------------------------------------- CHANNEL PLAN GRID */
+/* ----------------------------------------------------------- CHANNEL SPECTRUM */
+
+// One bandwidth's spectrum strip: a single axis spanning the *entire* CFR band
+// (not just where channels happen to fall), with a bold vertical tick at every
+// channel's low frequency and every channel's high frequency, to true scale.
+// Channel-number labels are drawn when there's room for them; past a density
+// threshold they're dropped in favor of a hover tooltip, so labels never
+// overlap into noise. Low/high naturally separate into two clusters because
+// that's how the band is actually organized — no extra encoding needed.
+function renderChannelSpectrum(lo, hi, plan, uid, bw, active) {
+  const W = 900, MARGIN = 18, TICK_H = 34, BASELINE = 56;
+  const x = f => MARGIN + (f - lo) / (hi - lo) * (W - 2 * MARGIN);
+  const rows = plan.rows;
+  const showLabels = rows.length <= 26;
+  const labelRowY = BASELINE + (showLabels ? 34 : 4);
+  const edgeY = labelRowY + 14;
+
+  const lowXs = [], highXs = [];
+  let ticks = "";
+  const tick = (freq, chanNum, side, note) => {
+    const tx = x(freq);
+    (side === "low" ? lowXs : highXs).push(tx);
+    const flagged = !!note;
+    const stroke = flagged ? "var(--unconfirmed-fg)" : "var(--accent)";
+    const sw = flagged ? 2.6 : 1.7;
+    const tt = escapeHtml(`Ch ${chanNum} ${side}: ${freq} MHz` + (note ? " — " + note : ""));
+    ticks += `<line x1="${tx.toFixed(1)}" y1="${BASELINE}" x2="${tx.toFixed(1)}" y2="${BASELINE - TICK_H}" stroke="${stroke}" stroke-width="${sw}"><title>${tt}</title></line>`;
+    if (showLabels) {
+      ticks += `<text x="${tx.toFixed(1)}" y="${BASELINE + 5}" font-size="9" font-weight="700" fill="var(--muted)" text-anchor="start" transform="rotate(62 ${tx.toFixed(1)} ${BASELINE + 5})">${chanNum}</text>`;
+    }
+  };
+  rows.forEach((r, i) => {
+    if (r.tx_mhz != null) tick(r.tx_mhz, i + 1, "low", r.note);
+    if (r.rx_mhz != null) tick(r.rx_mhz, i + 1, "high", r.note);
+  });
+
+  let clusterCaptions = "";
+  if (lowXs.length) {
+    const mid = (Math.min(...lowXs) + Math.max(...lowXs)) / 2;
+    clusterCaptions += `<text x="${mid.toFixed(1)}" y="${BASELINE - TICK_H - 8}" font-size="11" font-weight="800" letter-spacing="1" fill="var(--muted)" text-anchor="middle">LOW</text>`;
+  }
+  if (highXs.length) {
+    const mid = (Math.min(...highXs) + Math.max(...highXs)) / 2;
+    clusterCaptions += `<text x="${mid.toFixed(1)}" y="${BASELINE - TICK_H - 8}" font-size="11" font-weight="800" letter-spacing="1" fill="var(--muted)" text-anchor="middle">HIGH</text>`;
+  }
+
+  const svgHtml = `<svg class="chan-spectrum-svg" viewBox="0 0 ${W} ${edgeY + 8}">
+    ${clusterCaptions}
+    ${ticks}
+    <line x1="${MARGIN}" y1="${BASELINE}" x2="${W - MARGIN}" y2="${BASELINE}" stroke="var(--border)" stroke-width="1.5"/>
+    <text x="${MARGIN}" y="${edgeY}" font-size="12" font-weight="700" fill="var(--text)">${lo} MHz</text>
+    <text x="${W - MARGIN}" y="${edgeY}" font-size="12" font-weight="700" fill="var(--text)" text-anchor="end">${hi} MHz</text>
+  </svg>`;
+
+  return `<div class="chan-grid" data-uid="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}" style="display:${active ? "block" : "none"}">${svgHtml}</div>`;
+}
 
 // Renders one band of a "channel_plan_display" family: a bandwidth selector
-// (large chips) plus, per bandwidth, a grid of pills — one pill per paired
-// channel (low ↔ high), in plan order. No vendor data, no extra columns —
-// just the channel plan itself, sized for someone scanning it at a glance.
+// (large chips) plus, per bandwidth, a full-band spectrum strip with a tick
+// per channel. No vendor data, no extra columns — just the channel plan
+// itself, sized for someone scanning it at a glance.
 function renderChannelPlanBand(band, uid) {
   const planEntry = CHANNEL_PLANS[band.plan_key];
   const allPlans = planEntry ? planEntry.plans : [];
   const bwList = (band.bandwidths || []).filter(bw => allPlans.some(p => p.channel_bandwidth === bw));
+  const [lo, hi] = planEntry ? channelPlanBandRange(band.plan_key) : [0, 0];
 
-  const sections = bwList.map((bw, idx) => {
-    const plan = allPlans.find(p => p.channel_bandwidth === bw);
-    const pills = plan.rows.map((r, i) => {
-      const flagged = r.note ? " chan-pill-flag" : "";
-      const low = r.tx_mhz != null ? r.tx_mhz : "—";
-      const high = r.rx_mhz != null ? r.rx_mhz : "—";
-      const tt = escapeHtml(`Channel ${i + 1}` + (r.note ? " — " + r.note : ""));
-      return `<div class="chan-pill${flagged}" title="${tt}">
-        <span class="chan-num">${i + 1}</span>
-        <span class="chan-pair"><span class="chan-freq">${low}</span><span class="chan-sep">&#8596;</span><span class="chan-freq">${high}</span></span>
-      </div>`;
-    }).join("");
-    return `<div class="chan-grid" data-uid="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}" style="display:${idx === 0 ? "grid" : "none"}">${pills}</div>`;
-  }).join("");
+  const sections = bwList.map((bw, idx) =>
+    renderChannelSpectrum(lo, hi, allPlans.find(p => p.channel_bandwidth === bw), uid, bw, idx === 0)
+  ).join("");
 
   const chips = bwList.map((bw, idx) =>
     `<button class="chip-lg${idx === 0 ? " active" : ""}" data-chanplan="${escapeHtml(uid)}" data-bw="${escapeHtml(bw)}">${escapeHtml(bw)}</button>`
@@ -978,7 +1012,7 @@ function renderChannelPlanBand(band, uid) {
     <div class="band-note">${escapeHtml(MODEL_INFO.channel_plan_display.note)}</div>
     <div class="chan-section">
       <div class="chan-toolbar">${chips}</div>
-      <p class="chan-unit-note">All frequencies in MHz — each pill is one paired channel, low &#8596; high.</p>
+      <p class="chan-unit-note">Full band span, to scale — each tick is one channel's low or high frequency; low and high pair by position (1st with 1st, 2nd with 2nd, …).</p>
       ${sections}
     </div>
   </details>`;
@@ -1288,7 +1322,7 @@ document.getElementById("main").addEventListener("click", e => {
     const uid = chanBtn.dataset.chanplan, bw = chanBtn.dataset.bw;
     chanBtn.parentElement.querySelectorAll(`[data-chanplan="${uid}"]`).forEach(b => b.classList.toggle("active", b === chanBtn));
     const section = chanBtn.closest(".chan-section");
-    section.querySelectorAll(`.chan-grid[data-uid="${uid}"]`).forEach(g => { g.style.display = (g.dataset.bw === bw) ? "grid" : "none"; });
+    section.querySelectorAll(`.chan-grid[data-uid="${uid}"]`).forEach(g => { g.style.display = (g.dataset.bw === bw) ? "block" : "none"; });
   }
 });
 
